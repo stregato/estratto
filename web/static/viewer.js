@@ -21,6 +21,8 @@
   const zoomOutBtn = document.getElementById("zoom-out-btn");
   const zoomInBtn = document.getElementById("zoom-in-btn");
   const zoomInfo = document.getElementById("zoom-info");
+  const loadingOverlay = document.getElementById("viewer-loading");
+  const loadingText = document.getElementById("viewer-loading-text");
 
   const prevBtn = document.getElementById("prev-page");
   const nextBtn = document.getElementById("next-page");
@@ -62,6 +64,15 @@
 
   function updateFullscreenLabel() {
     fullscreenBtn.textContent = document.fullscreenElement ? "Exit Fullscreen" : "Fullscreen";
+  }
+
+  function showLoading(message) {
+    loadingText.textContent = message;
+    loadingOverlay.style.display = "flex";
+  }
+
+  function hideLoading() {
+    loadingOverlay.style.display = "none";
   }
 
   async function toggleFullscreen() {
@@ -141,6 +152,7 @@
     let suppressScrollSave = false;
 
     pdfViewer.style.display = "flex";
+    showLoading("Loading PDF... 0%");
     prevBtn.style.display = "inline-block";
     nextBtn.style.display = "inline-block";
     pageInfo.style.display = "inline";
@@ -234,10 +246,21 @@
     }
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
-    pdfDoc = await pdfjsLib.getDocument(`/api/file/${messageId}`).promise;
+    const loadingTask = pdfjsLib.getDocument(`/api/file/${messageId}`);
+    loadingTask.onProgress = (progressData) => {
+      if (!progressData?.total) {
+        showLoading("Loading PDF...");
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Math.round((progressData.loaded / progressData.total) * 100)));
+      showLoading(`Loading PDF... ${percent}%`);
+    };
+    pdfDoc = await loadingTask.promise;
     totalPages = pdfDoc.numPages || 1;
     if (currentPage > totalPages) currentPage = totalPages;
+    showLoading("Rendering pages...");
     await renderAllPages(currentPage, savedScrollRatio);
+    hideLoading();
 
     prevBtn.onclick = async () => {
       if (currentPage <= 1) return;
@@ -294,6 +317,7 @@
   async function initEpubViewer() {
     const container = document.getElementById("epub-viewer");
     container.style.display = "block";
+    showLoading("Loading EPUB...");
 
     const book = ePub(`/api/file/${messageId}`);
     const rendition = book.renderTo("epub-viewer", {
@@ -311,6 +335,7 @@
     } else {
       await rendition.display();
     }
+    hideLoading();
 
     // Get total locations (approximate page count)
     book.ready.then(() => {
@@ -357,10 +382,12 @@
   async function initComicViewer() {
     const container = document.getElementById("comic-viewer");
     container.style.display = "block";
+    showLoading("Loading comic archive...");
 
     // Fetch the CBZ/CBR file
     const response = await fetch(`/api/file/${messageId}`);
     const blob = await response.blob();
+    showLoading("Unpacking pages...");
 
     // Load with JSZip
     const zip = await JSZip.loadAsync(blob);
@@ -392,6 +419,7 @@
 
     await loadImages();
     updatePageInfo();
+    hideLoading();
 
     // Scroll to saved page
     if (currentPage > 1 && imageElements[currentPage - 1]) {
@@ -456,6 +484,7 @@
   // Test if file is accessible first
   async function testFileAccess() {
     try {
+      showLoading("Checking file access...");
       const response = await fetch(`/api/file/${messageId}`);
       if (!response.ok) {
         const errorText = await response.text();
@@ -483,6 +512,7 @@
       .then(() => initPdfViewer())
       .catch((e) => {
         console.error('[PDF Viewer] Error:', e);
+        hideLoading();
         alert(`Failed to load PDF: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${filename}`);
         window.location.href = "/";
       });
@@ -491,6 +521,7 @@
       .then(() => initEpubViewer())
       .catch((e) => {
         console.error('EPUB viewer error:', e);
+        hideLoading();
         alert(`Failed to load EPUB: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${filename}`);
         window.location.href = "/";
       });
@@ -499,10 +530,12 @@
       .then(() => initComicViewer())
       .catch((e) => {
         console.error('Comic viewer error:', e);
+        hideLoading();
         alert(`Failed to load comic: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${filename}`);
         window.location.href = "/";
       });
   } else {
+    hideLoading();
     alert(`Unsupported file format: ${ext}`);
     window.location.href = "/";
   }
