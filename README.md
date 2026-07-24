@@ -94,12 +94,13 @@ The repo now includes a container image that is suitable for Raspberry Pi OS 64-
 ```bash
 git clone <your-fork-or-copy-of-this-repo> ~/estratto
 cd ~/estratto
-mkdir -p docker-data
+sudo mkdir -p /var/estratto
+sudo chown -R $USER:$USER /var/estratto
 docker compose up --build -d
 ```
 
 On first start the container copies the bundled `config.yaml` to
-`./docker-data/config.yaml`. Edit that file with your real values, then restart:
+`/var/estratto/config.yaml`. Edit that file with your real values, then restart:
 
 ```bash
 docker compose restart
@@ -110,7 +111,7 @@ Open `http://<pi-ip>:8001`, then use the Telegram source screen to log in and in
 ### What persists
 
 Everything important lives under `/data` inside the container, which is mapped to
-`./docker-data` by `docker-compose.yml`:
+`/var/estratto` by `docker-compose.yml`:
 
 - `config.yaml`
 - `estratto.db`
@@ -127,7 +128,7 @@ docker build -t estratto .
 docker run -d \
   --name estratto \
   -p 8001:8001 \
-  -v "$(pwd)/docker-data:/data" \
+  -v /var/estratto:/data \
   --restart unless-stopped \
   estratto web
 ```
