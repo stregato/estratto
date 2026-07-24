@@ -120,6 +120,7 @@
   let arxivSearchTerm = "";
   let arxivCategory = "";
   let arxivTotal = 0;
+  let telegramLoginStage = "phone";
   let openDocuments = JSON.parse(localStorage.getItem("openDocuments") || "[]")
     .filter((doc) => doc && doc.messageId && doc.filename)
     .map((doc) => ({ messageId: String(doc.messageId), filename: String(doc.filename) }));
@@ -964,6 +965,21 @@
 
   // ---- Status ------------------------------------------------------------
 
+  function resetTelegramLoginUi() {
+    telegramLoginStage = "phone";
+    $("#login-step-phone").style.display = "block";
+    $("#login-step-code").style.display = "none";
+    $("#login-step-password").style.display = "none";
+    $("#login-message").textContent = "";
+  }
+
+  function applyTelegramLoginStage() {
+    const phoneVisible = telegramLoginStage === "phone" || telegramLoginStage === "code" || telegramLoginStage === "password";
+    $("#login-step-phone").style.display = phoneVisible ? "block" : "none";
+    $("#login-step-code").style.display = telegramLoginStage === "code" || telegramLoginStage === "password" ? "block" : "none";
+    $("#login-step-password").style.display = telegramLoginStage === "password" ? "block" : "none";
+  }
+
   async function refreshStatus() {
     const s = await api("/api/status");
     $("#status-cards").innerHTML = `
@@ -978,6 +994,10 @@
     $("#login-authorized").style.display = s.telegram_authorized ? "block" : "none";
     $("#login-step-keys").style.display = (!s.telegram_authorized && !s.telegram_app_configured) ? "block" : "none";
     $("#login-flow").style.display = (!s.telegram_authorized && s.telegram_app_configured) ? "block" : "none";
+
+    if (!s.telegram_authorized && s.telegram_app_configured) {
+      applyTelegramLoginStage();
+    }
 
     const channelInput = $("#channel-input");
     if (s.telegram_authorized && document.activeElement !== channelInput) {
@@ -1029,7 +1049,8 @@
     if (!phone) return;
     try {
       await api("/api/telegram/send_code", { method: "POST", body: JSON.stringify({ phone }) });
-      $("#login-step-code").style.display = "block";
+      telegramLoginStage = "code";
+      applyTelegramLoginStage();
       $("#login-message").textContent = "Code sent. Check Telegram.";
     } catch (e) {
       $("#login-message").textContent = e.message;
@@ -1041,10 +1062,12 @@
     try {
       const r = await api("/api/telegram/verify_code", { method: "POST", body: JSON.stringify({ code }) });
       if (r.status === "password_required") {
-        $("#login-step-password").style.display = "block";
+        telegramLoginStage = "password";
+        applyTelegramLoginStage();
         $("#login-message").textContent = "2FA enabled, enter your password.";
       } else {
         $("#login-message").textContent = "Logged in.";
+        telegramLoginStage = "phone";
         refreshStatus();
       }
     } catch (e) {
@@ -1057,6 +1080,7 @@
     try {
       await api("/api/telegram/verify_password", { method: "POST", body: JSON.stringify({ password }) });
       $("#login-message").textContent = "Logged in.";
+      telegramLoginStage = "phone";
       refreshStatus();
     } catch (e) {
       $("#login-message").textContent = e.message;
@@ -1065,6 +1089,7 @@
 
   $("#logout-btn").addEventListener("click", async () => {
     await api("/api/telegram/logout", { method: "POST" });
+    resetTelegramLoginUi();
     refreshStatus();
   });
 

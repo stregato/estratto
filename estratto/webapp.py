@@ -232,6 +232,8 @@ def create_app(config_path: str = None) -> FastAPI:
     @app.post("/api/telegram/logout")
     async def logout():
         await state.telegram.log_out()
+        state.login_phone = None
+        await state.rebuild_telegram_client()
         return {"status": "logged_out"}
 
     # ---- Catalog / indexing -------------------------------------------------
