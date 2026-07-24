@@ -1,0 +1,11 @@
+telethon>=1.36
+ruamel.yaml>=0.18
+ebooklib>=0.18
+beautifulsoup4>=4.12
+pypdf>=4.0
+PyMuPDF>=1.24
+openai>=1.30
+requests>=2.31
+fastapi>=0.111
+uvicorn>=0.30
+python-multipart>=0.0.9

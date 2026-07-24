@@ -1,0 +1,20 @@
+[Unit]
+Description=Estratto headless listener (no web UI)
+After=network-online.target
+Wants=network-online.target
+
+# Do not enable this alongside estratto-web.service if the web UI's own "Start live
+# listener" toggle is in use -- both drive the same Telethon session and will conflict.
+# Pick one: either the web UI's listener toggle, or this standalone unit.
+
+[Service]
+Type=simple
+User=__ESTRATTO_USER__
+WorkingDirectory=__ESTRATTO_DIR__
+ExecStart=__ESTRATTO_DIR__/venv/bin/python -m estratto.main -c __ESTRATTO_DIR__/config.yaml listen
+Restart=on-failure
+RestartSec=5
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

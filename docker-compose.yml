@@ -1,0 +1,10 @@
+services:
+  estratto:
+    build: .
+    image: estratto:latest
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./docker-data:/data
+    restart: unless-stopped
+    command: ["web"]

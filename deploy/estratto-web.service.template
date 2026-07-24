@@ -1,0 +1,17 @@
+[Unit]
+Description=Estratto web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__ESTRATTO_USER__
+WorkingDirectory=__ESTRATTO_DIR__
+ExecStart=__ESTRATTO_DIR__/venv/bin/python -m estratto.main -c __ESTRATTO_DIR__/config.yaml web
+Restart=on-failure
+RestartSec=5
+# Modest limits appropriate for a Pi 4; raise if you see OOM kills with large PDFs.
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target

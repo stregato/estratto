@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Estratto</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Estratto</h1>
+    <nav>
+      <button class="tab-btn active" data-tab="catalog">All</button>
+      <div id="custom-tabs-list"></div>
+      <button id="add-custom-tab-btn" class="tab-btn add-btn">+</button>
+    </nav>
+    <div class="header-reader-tabs">
+      <div id="reader-tabs" class="reader-tabs"></div>
+    </div>
+    <div class="source-menu">
+      <button id="source-toggle" class="settings-btn" title="Import Sources">⤓</button>
+      <div id="source-dropdown" class="dropdown" style="display:none">
+        <button class="tab-btn" data-tab="telegram">Telegram</button>
+        <button class="tab-btn" data-tab="arxiv">arXiv</button>
+      </div>
+    </div>
+    <div class="settings-menu">
+      <button id="settings-toggle" class="settings-btn">⚙️</button>
+      <div id="settings-dropdown" class="dropdown" style="display:none">
+        <button class="tab-btn" data-tab="status">Status</button>
+        <button class="tab-btn" data-tab="config">Configuration</button>
+        <button id="reset-catalog-menu-btn" class="tab-btn">Reset catalog</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="content-pane">
+      <!-- All tab - browse catalog -->
+      <section id="tab-catalog" class="tab active">
+        <div class="toolbar catalog-tab-actions">
+          <button id="delete-tab-btn" class="secondary" style="display:none;">Delete this tab</button>
+        </div>
+
+        <div id="tag-filters" class="tag-section" style="display:none">
+          <div class="toolbar catalog-filter-toolbar">
+            <input id="search-input" type="search" placeholder="Search filename or caption...">
+          </div>
+          <div class="tag-tabs">
+            <div id="tag-tab-list"></div>
+          </div>
+        </div>
+
+        <table id="catalog-table">
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>Size</th>
+              <th>Date</th>
+              <th width="40"></th>
+              <th width="80"></th>
+            </tr>
+          </thead>
+          <tbody id="catalog-body"></tbody>
+        </table>
+        <div class="toolbar">
+          <button id="prev-page">&laquo; Prev</button>
+          <span id="page-info" class="muted"></span>
+          <button id="next-page">Next &raquo;</button>
+        </div>
+      </section>
+
+      <section id="tab-telegram" class="tab">
+        <div class="telegram-controls card">
+          <div class="telegram-controls-header">
+            <h3>Telegram</h3>
+            <button id="telegram-advanced-btn" class="secondary icon-btn" title="Telegram application settings">⚙️</button>
+          </div>
+
+          <div id="login-authorized" style="display:none">
+            <div class="telegram-login-row">
+              <p class="telegram-status">&#9989; Logged into Telegram.</p>
+              <button id="logout-btn">Log out</button>
+            </div>
+            <div class="telegram-inline-row">
+              <label class="telegram-channel-field">Channel to watch
+                <input id="channel-input" list="channel-history" type="text" placeholder="e.g. mychannel or https://t.me/mychannel">
+                <datalist id="channel-history"></datalist>
+              </label>
+              <button id="index-btn">Index channel</button>
+            </div>
+            <p id="channel-message" class="muted"></p>
+          </div>
+
+          <div id="login-step-keys" style="display:none">
+          <p class="muted">This install doesn't have Telegram app credentials set. Get a free
+          API ID and API Hash from
+          <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a>
+          and paste them in below (normally you won't see this screen -- it ships with a
+          working shared default).</p>
+          <label>API ID <input id="keys-api-id-input" type="text" inputmode="numeric" placeholder="e.g. 123456"></label>
+          <label>API Hash <input id="keys-api-hash-input" type="text" placeholder="e.g. a1b2c3..."></label>
+          <button id="keys-continue-btn">Continue</button>
+          <p id="keys-message" class="muted"></p>
+          </div>
+
+          <div id="login-flow" style="display:none">
+            <div id="login-step-phone">
+              <label>Phone number (international format, e.g. +15551234567)</label>
+              <input id="phone-input" type="tel" placeholder="+15551234567">
+              <button id="send-code-btn">Log in</button>
+            </div>
+            <div id="login-step-code" style="display:none">
+              <label>Code Telegram just sent you</label>
+              <input id="code-input" type="text" placeholder="12345">
+              <button id="verify-code-btn">Continue</button>
+            </div>
+            <div id="login-step-password" style="display:none">
+              <label>Telegram password (2FA)</label>
+              <input id="password-input" type="password">
+              <button id="verify-password-btn">Continue</button>
+            </div>
+            <p id="login-message" class="muted"></p>
+          </div>
+        </div>
+
+        <div class="download-table-section">
+          <div class="toolbar table-toolbar telegram-search-toolbar">
+            <input id="download-search-input" type="search" placeholder="Search filename or caption...">
+            <span id="index-status" class="muted"></span>
+          </div>
+          <div id="download-tag-filters" class="table-tag-filters" style="display:none">
+            <div id="download-tag-list" class="tag-tabs"></div>
+          </div>
+
+          <table id="download-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Size</th>
+                <th>Date</th>
+                <th width="40"></th>
+                <th width="80"></th>
+              </tr>
+            </thead>
+            <tbody id="download-body"></tbody>
+          </table>
+          <div class="toolbar table-footer-toolbar">
+            <button id="download-prev-page">&laquo; Prev</button>
+            <span id="download-page-info" class="muted"></span>
+            <button id="download-next-page">Next &raquo;</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-arxiv" class="tab">
+        <div class="card">
+          <div class="telegram-controls-header">
+            <h3>arXiv</h3>
+          </div>
+          <div class="toolbar">
+            <input id="arxiv-search-input" type="search" placeholder="Search arXiv papers...">
+            <input id="arxiv-category-input" type="text" placeholder="Category, e.g. cs.AI">
+            <button id="arxiv-search-btn">Search</button>
+          </div>
+          <p id="arxiv-message" class="muted"></p>
+        </div>
+
+        <div class="download-table-section">
+          <table id="arxiv-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Date</th>
+                <th width="100"></th>
+              </tr>
+            </thead>
+            <tbody id="arxiv-body"></tbody>
+          </table>
+          <div class="toolbar table-footer-toolbar">
+            <button id="arxiv-prev-page">&laquo; Prev</button>
+            <span id="arxiv-page-info" class="muted"></span>
+            <button id="arxiv-next-page">Next &raquo;</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-status" class="tab">
+        <div id="status-cards" class="cards"></div>
+        <div class="toolbar">
+          <button id="listen-start-btn">Start live listener</button>
+          <button id="listen-stop-btn">Stop live listener</button>
+        </div>
+        <h3>Recent activity</h3>
+        <table id="recent-table">
+          <thead><tr><th>Message</th><th>Filename</th><th>Status</th><th>Final path</th><th>Updated</th></tr></thead>
+          <tbody id="recent-body"></tbody>
+        </table>
+      </section>
+
+      <section id="tab-config" class="tab">
+        <form id="config-form">
+        <fieldset>
+          <legend>Channel to watch</legend>
+          <p class="muted">The Telegram channel Estratto indexes and downloads PDFs from.
+          You can also set this right after logging in, on the Telegram Login tab.</p>
+          <label>Channel (username, t.me link, or numeric ID) <input name="telegram.channel" type="text" placeholder="e.g. mychannel or https://t.me/mychannel"></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Local storage</legend>
+          <p class="muted">Downloaded files are stored locally here.</p>
+          <label>Downloaded files directory <input name="staging.dir" type="text"></label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Web UI</legend>
+          <label>Bind host <input name="web.host" type="text"></label>
+          <label>Port <input name="web.port" type="number"></label>
+        </fieldset>
+
+          <button type="submit">Save configuration</button>
+          <p id="config-message" class="muted"></p>
+        </form>
+      </section>
+      <section id="document-stage" class="tab document-stage">
+        <div id="reader-empty" class="reader-empty">
+          <h2>Open a document</h2>
+          <p class="muted">Select any available file from the lists to open it here. You can keep multiple documents open and switch between them with the tabs near the gear menu.</p>
+        </div>
+        <div id="reader-views" class="reader-views"></div>
+      </section>
+    </section>
+  </main>
+
+  <!-- Tag discovery modal -->
+  <div id="tag-modal" class="modal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Discover Tags</h3>
+        <button id="tag-modal-close" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted" id="tag-modal-filename"></p>
+        <div id="tag-modal-list" class="tag-discovery-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom tab creation modal -->
+  <div id="custom-tab-modal" class="modal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Create Custom Tab</h3>
+        <button id="custom-tab-modal-close" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <label>Tab name
+          <input id="custom-tab-name-input" type="text" placeholder="e.g., Tech Books">
+        </label>
+        <label style="margin-top: 1rem; display: block;">Select tags to include:</label>
+        <div id="custom-tab-tags-list" class="custom-tab-tags-list"></div>
+        <button id="custom-tab-create-btn" style="margin-top: 1rem;">Create Tab</button>
+        <p id="custom-tab-message" class="muted"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="telegram-advanced-modal" class="modal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Telegram Application</h3>
+        <button id="telegram-advanced-modal-close" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted">These are advanced Telegram app credentials. Only change them if you need your own app keys from <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a>.</p>
+        <label>API ID
+          <input id="telegram-advanced-api-id" type="number" inputmode="numeric">
+        </label>
+        <label>API Hash
+          <input id="telegram-advanced-api-hash" type="text">
+        </label>
+        <label>Session name
+          <input id="telegram-advanced-session-name" type="text">
+        </label>
+        <div class="modal-actions">
+          <button id="telegram-advanced-save-btn">Save</button>
+        </div>
+        <p id="telegram-advanced-message" class="muted"></p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,97 @@
+# Estratto configuration
+# Fill in the placeholders below with your real values before running.
+
+telegram:
+  # Pre-filled with Telegram Desktop's own publicly-documented API ID/Hash (published in
+  # its open-source repo, github.com/telegramdesktop/tdesktop) so login works with just a
+  # phone number -- no my.telegram.org signup needed. Many third-party Telegram tools reuse
+  # these for exactly this reason. If you ever hit rate limits or want a private one, get
+  # your own free pair from https://my.telegram.org -> API Development Tools and paste it
+  # in here (or via the web UI's Telegram Login tab).
+  api_id: 2040
+  api_hash: "b18441a1ff607e10a989891a5462e627"
+  # Session file name (Telethon will create <session_name>.session on first login)
+  session_name: "estratto"
+  # Channel username (e.g. "mychannel"), t.me link, or numeric chat ID
+  channel: "books_magazine"
+
+staging:
+  # Directory where files are downloaded before sorting
+  dir: "./staging"
+  # Directory for files that couldn't be confidently classified
+  needs_review_dir: "./needs-review"
+
+# The channel mixes regular posts, images, and documents together. Telegram photos/images
+# never match here (they aren't `document` messages with one of these extensions).
+# Keep this list aligned with the formats Estratto knows how to index, download, and view.
+extensions:
+- ".pdf"
+- ".epub"
+- ".mobi"
+- ".cbz"
+- ".cbr"
+
+db:
+  path: "./estratto.db"
+
+openai:
+  # Set enabled: false to skip LLM classification entirely (filename/metadata-only sorting)
+  enabled: false
+  api_key: "YOUR_OPENAI_API_KEY"
+  model: "gpt-4o-mini"
+  # Minimum confidence (0-1) required to trust the LLM classification;
+  # below this, files are routed to needs_review_dir instead.
+  confidence_threshold: 0.6
+  # Max characters of extracted text excerpt sent to the LLM for classification
+  excerpt_chars: 1500
+
+# Library roots and path templates per content type.
+# Placeholders available: {category} {author} {title} {ext} {magazine} {year} {issue} {series} {volume}
+# NOTE: Replace these with your actual Kavita library folder paths.
+libraries:
+  book:
+    root: "/kavita-library/Books"
+    template: "{category}/{author}/{title}/{title}.{ext}"
+  magazine:
+    root: "/kavita-library/Magazines"
+    template: "{category}/{magazine}/{year}/{magazine} {issue}.{ext}"
+  comic:
+    root: "/kavita-library/Comics"
+    template: "{category}/{series}/{series} {volume}.{ext}"
+  academic-article:
+    root: "/kavita-library/Articles"
+    template: "{category}/{author}/{title}/{title}.{ext}"
+
+# Filename parsing patterns, tried in order, first match wins.
+# Named groups: author, title, magazine, year, issue, series, volume
+filename_patterns:
+- '^(?P<author>[^-]+?)\s*-\s*(?P<title>.+)$'           # "Author - Title.ext"
+- '^(?P<magazine>[^-]+?)\s*-\s*(?P<year>\d{4})-(?P<issue>\d{1,2})$'    # "MagazineName - YYYY-MM.ext"
+- '^(?P<series>.+?)\s+(?P<volume>\d+)$'                 # "Series 01.ext"
+
+kavita:
+  base_url: "https://YOUR_KAVITA_HOST"
+  api_key: "YOUR_KAVITA_API_KEY"
+  # Maps content_type -> Kavita library ID (integer). Fill in with real IDs from
+  # Settings -> Libraries in Kavita, or GET /api/Library/libraries.
+  library_ids:
+    book: 1
+    magazine: 2
+    comic: 3
+    academic-article: 1
+  # Seconds to wait/batch new files before triggering a scan
+  scan_debounce_seconds: 60
+  # Retry settings for API calls
+  retry_attempts: 5
+  retry_backoff_seconds: 5
+
+logging:
+  level: "INFO"
+  # Optional path to also write logs to a file; leave empty to log to stdout only
+  file: ""
+
+web:
+  # Web UI bind address/port. 0.0.0.0 makes it reachable from other devices on your LAN
+  # (e.g. http://<pi-ip>:8000) -- use 127.0.0.1 to restrict it to the Pi itself.
+  host: "0.0.0.0"
+  port: 8001

@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.git
+.codex
+.agents
+estratto.db
+*.session
+staging/
+needs-review/
