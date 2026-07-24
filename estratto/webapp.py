@@ -239,25 +239,32 @@ def create_app(config_path: str = None) -> FastAPI:
     # ---- Catalog / indexing -------------------------------------------------
 
     @app.get("/api/catalog")
-    async def catalog(search: Optional[str] = None, limit: int = 50, offset: int = 0, downloaded_only: bool = False):
-        items = state.db.catalog(search=search, limit=limit, offset=offset, downloaded_only=downloaded_only)
+    async def catalog(
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+        downloaded_only: bool = False,
+        search_any: Optional[str] = None,
+    ):
+        search_any_terms = [term.strip() for term in (search_any or "").split(",") if term.strip()]
+        items = state.db.catalog(
+            search=search,
+            limit=limit,
+            offset=offset,
+            downloaded_only=downloaded_only,
+            search_any=search_any_terms,
+        )
 
         for item in items:
-            record = db_module.FileRecord(
-                message_id=item["message_id"],
-                channel=None,
-                original_filename=None,
-                staging_path=item.get("staging_path"),
-                final_path=item.get("final_path"),
-                content_type=None,
-                status=item.get("status") or "",
-                error=item.get("error"),
-            )
-            item["file_exists"] = _find_existing_file(state.cfg, record, item["message_id"]) is not None
+            item["file_exists"] = bool(item.get("status"))
 
         return {
             "items": items,
-            "total": state.db.catalog_count(search=search, downloaded_only=downloaded_only),
+            "total": state.db.catalog_count(
+                search=search,
+                downloaded_only=downloaded_only,
+                search_any=search_any_terms,
+            ),
         }
 
     async def _run_index():
@@ -608,6 +615,12 @@ def create_app(config_path: str = None) -> FastAPI:
             scroll_position=data.get("scroll_position", 0),
         )
         return {"status": "saved"}
+
+    @app.get("/api/file_status/{message_id}")
+    async def file_status(message_id: int):
+        record = state.db.get_record(message_id)
+        path_obj = _find_existing_file(state.cfg, record, message_id)
+        return {"exists": path_obj is not None}
 
     # ---- File serving ---------------------------------------------------------
 

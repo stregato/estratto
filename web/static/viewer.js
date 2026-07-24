@@ -21,6 +21,8 @@
   const zoomOutBtn = document.getElementById("zoom-out-btn");
   const zoomInBtn = document.getElementById("zoom-in-btn");
   const zoomInfo = document.getElementById("zoom-info");
+  const outlineToggleBtn = document.getElementById("outline-toggle-btn");
+  const pdfOutline = document.getElementById("pdf-outline");
   const loadingOverlay = document.getElementById("viewer-loading");
   const loadingText = document.getElementById("viewer-loading-text");
 
@@ -150,6 +152,7 @@
     let renderVersion = 0;
     let pageCanvases = [];
     let suppressScrollSave = false;
+    let outlineOpen = false;
 
     pdfViewer.style.display = "flex";
     showLoading("Loading PDF... 0%");
@@ -159,6 +162,7 @@
     zoomOutBtn.style.display = "inline-block";
     zoomInBtn.style.display = "inline-block";
     zoomInfo.style.display = "inline";
+    outlineToggleBtn.style.display = "none";
 
     currentPage = Math.max(1, Number(progress.current_page) || 1);
     const savedScrollRatio = Number(progress.scroll_position) || 0;
@@ -245,6 +249,52 @@
       }, 250);
     }
 
+    async function resolveOutlinePage(dest) {
+      if (!dest) return null;
+      const destination = typeof dest === "string" ? await pdfDoc.getDestination(dest) : dest;
+      if (!destination || !destination[0]) return null;
+      const pageIndex = await pdfDoc.getPageIndex(destination[0]);
+      return pageIndex + 1;
+    }
+
+    async function buildOutlineMarkup(items) {
+      const list = document.createElement("ul");
+      list.className = "outline-list";
+
+      for (const item of items) {
+        const entry = document.createElement("li");
+        const button = document.createElement("button");
+        button.className = "outline-link";
+        button.textContent = item.title || "Untitled";
+        button.addEventListener("click", async () => {
+          const targetPage = await resolveOutlinePage(item.dest);
+          if (targetPage) scrollToPage(targetPage);
+        });
+        entry.appendChild(button);
+
+        if (item.items && item.items.length) {
+          entry.appendChild(await buildOutlineMarkup(item.items));
+        }
+        list.appendChild(entry);
+      }
+      return list;
+    }
+
+    async function loadOutline() {
+      const outline = await pdfDoc.getOutline();
+      if (!outline || !outline.length) {
+        pdfOutline.classList.remove("open");
+        pdfOutline.innerHTML = "";
+        outlineToggleBtn.style.display = "none";
+        return;
+      }
+
+      pdfOutline.innerHTML = "";
+      pdfOutline.appendChild(await buildOutlineMarkup(outline));
+      outlineToggleBtn.style.display = "inline-block";
+      outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
+    }
+
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
     const loadingTask = pdfjsLib.getDocument(`/api/file/${messageId}`);
     loadingTask.onProgress = (progressData) => {
@@ -258,6 +308,7 @@
     pdfDoc = await loadingTask.promise;
     totalPages = pdfDoc.numPages || 1;
     if (currentPage > totalPages) currentPage = totalPages;
+    await loadOutline();
     showLoading("Rendering pages...");
     await renderAllPages(currentPage, savedScrollRatio);
     hideLoading();
@@ -282,6 +333,12 @@
       if (currentScale >= 2.5) return;
       currentScale = Math.min(2.5, currentScale + 0.15);
       await renderAllPages(currentPage, 0);
+    };
+
+    outlineToggleBtn.onclick = () => {
+      outlineOpen = !outlineOpen;
+      pdfOutline.classList.toggle("open", outlineOpen);
+      outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
     };
 
     container.addEventListener("scroll", () => {

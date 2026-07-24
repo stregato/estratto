@@ -285,7 +285,14 @@ class Database:
                 (message_id, filename, caption, size, message_date, ext),
             )
 
-    def catalog(self, search: Optional[str] = None, limit: int = 500, offset: int = 0, downloaded_only: bool = False) -> list[dict]:
+    def catalog(
+        self,
+        search: Optional[str] = None,
+        limit: int = 500,
+        offset: int = 0,
+        downloaded_only: bool = False,
+        search_any: Optional[list[str]] = None,
+    ) -> list[dict]:
         """Catalog entries left-joined with processing status, newest first."""
         query = """
             SELECT c.message_id, c.filename, c.caption, c.size, c.message_date, c.ext,
@@ -301,6 +308,16 @@ class Database:
             like = f"%{search}%"
             params.extend([like, like])
 
+        if search_any:
+            any_terms = [term.strip() for term in search_any if term and term.strip()]
+            if any_terms:
+                term_clauses = []
+                for term in any_terms:
+                    term_clauses.append("(c.filename LIKE ? OR c.caption LIKE ?)")
+                    like = f"%{term}%"
+                    params.extend([like, like])
+                where_clauses.append("(" + " OR ".join(term_clauses) + ")")
+
         if downloaded_only:
             where_clauses.append("f.status IS NOT NULL")
 
@@ -314,7 +331,12 @@ class Database:
             rows = cur.fetchall()
         return [dict(row) for row in rows]
 
-    def catalog_count(self, search: Optional[str] = None, downloaded_only: bool = False) -> int:
+    def catalog_count(
+        self,
+        search: Optional[str] = None,
+        downloaded_only: bool = False,
+        search_any: Optional[list[str]] = None,
+    ) -> int:
         query = "SELECT COUNT(*) AS n FROM catalog c"
         params: list = []
         where_clauses = []
@@ -327,6 +349,16 @@ class Database:
             where_clauses.append("(c.filename LIKE ? OR c.caption LIKE ?)")
             like = f"%{search}%"
             params.extend([like, like])
+
+        if search_any:
+            any_terms = [term.strip() for term in search_any if term and term.strip()]
+            if any_terms:
+                term_clauses = []
+                for term in any_terms:
+                    term_clauses.append("(c.filename LIKE ? OR c.caption LIKE ?)")
+                    like = f"%{term}%"
+                    params.extend([like, like])
+                where_clauses.append("(" + " OR ".join(term_clauses) + ")")
 
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)

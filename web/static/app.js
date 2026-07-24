@@ -20,9 +20,34 @@
 
   const sourceToggle = $("#source-toggle");
   const sourceDropdown = $("#source-dropdown");
+  const themeToggle = $("#theme-toggle");
   const settingsToggle = $("#settings-toggle");
   const settingsDropdown = $("#settings-dropdown");
   const telegramAdvancedModal = $("#telegram-advanced-modal");
+
+  let themePreference = localStorage.getItem("themePreference") || "";
+
+  function applyThemePreference() {
+    if (themePreference === "light" || themePreference === "dark") {
+      document.documentElement.setAttribute("data-theme", themePreference);
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+    }
+    const isLight = document.documentElement.getAttribute("data-theme") === "light"
+      || (!document.documentElement.hasAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: light)").matches);
+    themeToggle.textContent = isLight ? "☀️" : "🌙";
+    themeToggle.title = isLight ? "Switch to dark theme" : "Switch to light theme";
+  }
+
+  function toggleThemePreference() {
+    const isCurrentlyLight = document.documentElement.getAttribute("data-theme") === "light"
+      || (!document.documentElement.hasAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: light)").matches);
+    themePreference = isCurrentlyLight ? "dark" : "light";
+    localStorage.setItem("themePreference", themePreference);
+    applyThemePreference();
+  }
+
+  applyThemePreference();
 
   sourceToggle.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -51,6 +76,8 @@
   settingsDropdown.addEventListener("click", (e) => {
     e.stopPropagation();
   });
+
+  themeToggle.addEventListener("click", toggleThemePreference);
 
   telegramAdvancedModal?.addEventListener("click", (e) => {
     if (e.target === telegramAdvancedModal) {
@@ -297,7 +324,28 @@
 
   window.estrattoCloseDocument = closeDocumentTab;
 
-  function openDocumentTab(messageId, filename) {
+  async function removeMissingDocument(messageId) {
+    try {
+      await api(`/api/delete/${messageId}`, { method: "POST" });
+    } catch (e) {
+      console.error("Failed to remove missing document:", e);
+    }
+    closeDocumentTab(messageId);
+    await Promise.allSettled([
+      loadCatalog(),
+      loadDownloadCatalog(),
+      loadTagFilters(),
+      loadDownloadTagFilters(),
+    ]);
+  }
+
+  async function openDocumentTab(messageId, filename) {
+    const status = await api(`/api/file_status/${messageId}`);
+    if (!status.exists) {
+      await removeMissingDocument(messageId);
+      return;
+    }
+
     const id = String(messageId);
     const existing = openDocuments.find((doc) => doc.messageId === id);
     if (!existing) {
@@ -310,9 +358,9 @@
 
   function attachFilenameOpenHandlers(rootSelector) {
     $$(`${rootSelector} .filename-link`).forEach((link) => {
-      link.addEventListener("click", (e) => {
+      link.addEventListener("click", async (e) => {
         e.preventDefault();
-        openDocumentTab(link.dataset.id, link.dataset.filename);
+        await openDocumentTab(link.dataset.id, link.dataset.filename);
       });
     });
   }
@@ -322,30 +370,6 @@
     if (event.data?.type !== "estratto-close-document") return;
     closeDocumentTab(event.data.messageId);
   });
-
-  async function loadCatalogMultipleTags() {
-    // Fetch all items (up to a reasonable limit) and filter client-side
-    const tags = activeFilter.split(",");
-    const params = new URLSearchParams({ limit: 10000 });
-    if (showDownloadedOnly) {
-      params.set("downloaded_only", "true");
-    }
-    const response = await api(`/api/catalog?${params}`);
-    let allItems = response.items;
-
-    // Filter items that match ANY of the tags
-    const filteredItems = allItems.filter(item => {
-      const searchText = `${item.filename || ""} ${item.caption || ""}`.toLowerCase();
-      return tags.some(tag => searchText.includes(tag.toLowerCase()));
-    });
-
-    // Apply pagination client-side
-    const total = filteredItems.length;
-    const start = page * PAGE_SIZE;
-    const items = filteredItems.slice(start, start + PAGE_SIZE);
-
-    renderCatalogTable(items, total);
-  }
 
   function renderCatalogTable(items, total) {
     const body = $("#catalog-body");
@@ -438,41 +462,25 @@
   }
 
   async function loadCatalog() {
-    // For custom tabs with multiple tags, we need to fetch and filter client-side
-    // since the API doesn't support OR queries
-    if (activeFilter && activeFilter.includes(",")) {
-      await loadCatalogMultipleTags();
-      return;
-    }
-
-    // For All tab, fetch all files and filter to show only downloaded files that exist on disk
     const params = new URLSearchParams({
-      limit: 10000,  // Fetch all files
-      offset: 0,
-      downloaded_only: false,  // Get everything to filter client-side
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+      downloaded_only: "true",
     });
 
-    // Use search for both regular search and tag filtering
-    const searchQuery = activeFilter || searchTerm;
-    if (searchQuery) {
-      params.set("search", searchQuery);
+    if (activeFilter) {
+      if (activeFilter.includes(",")) {
+        params.set("search_any", activeFilter);
+      } else {
+        params.set("search", activeFilter);
+      }
+    } else if (searchTerm) {
+      params.set("search", searchTerm);
     }
 
     const response = await api(`/api/catalog?${params}`);
-    let items = response.items;
-
-    // Filter to show only files that exist on disk (downloaded files)
-    items = items.filter(item => item.file_exists === true);
-
-    const total = items.length;
-    lastCatalogCount = total;
-
-    // Paginate client-side
-    const start = page * PAGE_SIZE;
-    const end = start + PAGE_SIZE;
-    const pageItems = items.slice(start, end);
-
-    renderCatalogTable(pageItems, total);
+    lastCatalogCount = response.total;
+    renderCatalogTable(response.items, response.total);
   }
 
   $("#search-input").addEventListener("input", (e) => {

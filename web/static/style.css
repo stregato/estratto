@@ -10,8 +10,16 @@
   --ok: #4caf7d;
 }
 
+:root[data-theme="light"] {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --border: #dde1e8;
+  --text: #1a1d23;
+  --muted: #6b7280;
+}
+
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     --bg: #f5f6f8;
     --panel: #ffffff;
     --border: #dde1e8;
