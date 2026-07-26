@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-PI_HOST="${1:-${ESTRATTO_PI_HOST:-}}"
+PI_HOST="${1:-${ESTRATTO_PI_HOST:-pi}}"
 PI_USER="${ESTRATTO_PI_USER:-pi}"
 PI_DIR="${ESTRATTO_PI_DIR:-~/estratto}"
 REMOTE_NAME="${ESTRATTO_GIT_REMOTE:-origin}"
@@ -21,11 +21,14 @@ prompt_if_empty() {
   printf -v "$var_name" "%s" "$current_value"
 }
 
-prompt_if_empty PI_HOST "Pi host (hostname or IP): "
 prompt_if_empty PI_USER "Pi SSH user [$PI_USER]: "
 PI_USER="${PI_USER:-pi}"
 prompt_if_empty PI_DIR "Pi Estratto directory [$PI_DIR]: "
 PI_DIR="${PI_DIR:-~/estratto}"
+
+quote_for_shell() {
+  printf "%q" "$1"
+}
 
 git add -A
 
@@ -46,10 +49,14 @@ else
   git push -u "$REMOTE_NAME" "$BRANCH"
 fi
 
+REMOTE_DIR_Q="$(quote_for_shell "$PI_DIR")"
+REMOTE_NAME_Q="$(quote_for_shell "$REMOTE_NAME")"
+BRANCH_Q="$(quote_for_shell "$BRANCH")"
+
 ssh "${PI_USER}@${PI_HOST}" "bash -lc '
 set -euo pipefail
-cd ${PI_DIR@Q}
-git pull --ff-only ${REMOTE_NAME@Q} ${BRANCH@Q}
+cd ${REMOTE_DIR_Q}
+git pull --ff-only ${REMOTE_NAME_Q} ${BRANCH_Q}
 docker compose up --build -d
 docker compose ps
 '"
