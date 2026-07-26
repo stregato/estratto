@@ -23,7 +23,9 @@ def setup_logging(cfg: Config) -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     log_file = cfg.get("logging", "file", default="")
     if log_file:
-        handlers.append(logging.FileHandler(log_file))
+        log_path = cfg.resolve_path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path))
     logging.basicConfig(
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -71,7 +73,7 @@ async def _run(cfg: Config, mode: str) -> None:
     telegram = EstrattoTelegramClient(
         api_id=int(cfg.get("telegram", "api_id")),
         api_hash=str(cfg.get("telegram", "api_hash")),
-        session_name=str(cfg.get("telegram", "session_name", default="estratto")),
+        session_name=cfg.telegram_session_name,
         channel=str(cfg.get("telegram", "channel")),
         staging_dir=cfg.staging_dir,
         allowed_extensions=cfg.allowed_extensions,
@@ -108,8 +110,15 @@ def main() -> None:
     subparsers.add_parser("backfill", help="Process a channel's full message history once")
     subparsers.add_parser("listen", help="Run continuously, reacting to new messages")
     subparsers.add_parser("web", help="Run the web UI (browse/select files, edit config, Telegram login)")
+    subparsers.add_parser("desktop", help="Run the local desktop launcher")
 
     args = parser.parse_args()
+
+    if args.command == "desktop":
+        from .desktop import main as run_desktop
+
+        run_desktop()
+        return
 
     if args.command == "web":
         _run_web(args.config)

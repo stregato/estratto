@@ -57,6 +57,8 @@ class EstrattoTelegramClient:
         staging_dir: Path,
         allowed_extensions: set[str],
     ):
+        session_path = Path(session_name).expanduser()
+        session_path.parent.mkdir(parents=True, exist_ok=True)
         self.client = TelegramClient(session_name, api_id, api_hash)
         self.channel = channel
         self.staging_dir = Path(staging_dir)

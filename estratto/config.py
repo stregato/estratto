@@ -9,6 +9,8 @@ from typing import Any
 
 from ruamel.yaml import YAML
 
+from .paths import default_config_path
+
 _yaml = YAML()
 _yaml.preserve_quotes = True
 _yaml.indent(mapping=2, sequence=2, offset=0)
@@ -34,11 +36,11 @@ SECRET_KEYS = {
 @dataclass
 class Config:
     raw: dict[str, Any] = field(default_factory=dict)
-    path: Path = field(default_factory=lambda: Path("config.yaml"))
+    path: Path = field(default_factory=default_config_path)
 
     @classmethod
-    def load(cls, path: str | Path = "config.yaml") -> "Config":
-        path = Path(path)
+    def load(cls, path: str | Path | None = None) -> "Config":
+        path = Path(path).expanduser() if path else default_config_path()
         if not path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {path}. Copy config.yaml and fill in your values."
@@ -100,19 +102,30 @@ class Config:
         _mask(snapshot, ())
         return snapshot
 
+    def resolve_path(self, raw_path: str | Path | None, default: str = "") -> Path:
+        candidate = raw_path if raw_path not in (None, "") else default
+        path = Path(candidate).expanduser()
+        if not path.is_absolute():
+            path = (self.path.parent / path).resolve()
+        return path
+
     # Convenience accessors -------------------------------------------------
 
     @property
     def staging_dir(self) -> Path:
-        return Path(self.get("staging", "dir", default="./staging"))
+        return self.resolve_path(self.get("staging", "dir", default="./staging"))
 
     @property
     def needs_review_dir(self) -> Path:
-        return Path(self.get("staging", "needs_review_dir", default="./needs-review"))
+        return self.resolve_path(self.get("staging", "needs_review_dir", default="./needs-review"))
 
     @property
     def db_path(self) -> Path:
-        return Path(self.get("db", "path", default="./estratto.db"))
+        return self.resolve_path(self.get("db", "path", default="./estratto.db"))
+
+    @property
+    def telegram_session_name(self) -> str:
+        return str(self.resolve_path(self.get("telegram", "session_name", default="estratto")))
 
     @property
     def allowed_extensions(self) -> set[str]:

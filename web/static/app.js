@@ -253,10 +253,14 @@
         view.innerHTML = `
           <iframe
             class="reader-frame"
-            src="/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&embedded=1"
             title="${escapeHtml(doc.filename)}"></iframe>
         `;
         views.appendChild(view);
+      }
+      const iframe = view.querySelector(".reader-frame");
+      const wantedSrc = `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&embedded=1`;
+      if (doc.messageId === activeDocumentId && iframe && iframe.getAttribute("src") !== wantedSrc) {
+        iframe.setAttribute("src", wantedSrc);
       }
       view.classList.toggle("active", doc.messageId === activeDocumentId);
     }
@@ -299,6 +303,7 @@
 
   function activateDocumentTab(messageId) {
     activeDocumentId = String(messageId);
+    renderReaderViews();
     $$(".reader-doc-tab").forEach((tab) => {
       tab.classList.toggle("active", tab.dataset.docId === activeDocumentId);
     });

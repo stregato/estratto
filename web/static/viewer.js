@@ -184,6 +184,8 @@
         if (version !== renderVersion) return;
         const viewport = page.getViewport({ scale: currentScale });
         const outputScale = window.devicePixelRatio || 1;
+        const pageWrapper = document.createElement("div");
+        pageWrapper.className = "pdf-page";
         const canvas = document.createElement("canvas");
         canvas.className = "pdf-page-canvas";
         canvas.dataset.page = String(i);
@@ -191,13 +193,29 @@
         canvas.height = Math.floor(viewport.height * outputScale);
         canvas.style.width = `${Math.floor(viewport.width)}px`;
         canvas.style.height = `${Math.floor(viewport.height)}px`;
-        pdfViewer.appendChild(canvas);
+        pageWrapper.style.width = `${Math.floor(viewport.width)}px`;
+        pageWrapper.style.height = `${Math.floor(viewport.height)}px`;
+        pageWrapper.appendChild(canvas);
+        const textLayer = document.createElement("div");
+        textLayer.className = "pdf-text-layer";
+        textLayer.style.width = `${Math.floor(viewport.width)}px`;
+        textLayer.style.height = `${Math.floor(viewport.height)}px`;
+        pageWrapper.appendChild(textLayer);
+        pdfViewer.appendChild(pageWrapper);
         pageCanvases.push(canvas);
 
         await page.render({
           canvasContext: canvas.getContext("2d"),
           viewport,
           transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null,
+        }).promise;
+
+        const textContent = await page.getTextContent();
+        await pdfjsLib.renderTextLayer({
+          textContentSource: textContent,
+          container: textLayer,
+          viewport,
+          textDivs: [],
         }).promise;
       }
 

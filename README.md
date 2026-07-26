@@ -140,6 +140,56 @@ docker run -d \
 - If you use host networking or different published ports, keep `web.port` in `config.yaml`
   aligned with what the container actually listens on.
 
+## Desktop packaging
+
+Estratto can also be packaged as a local desktop app that starts the server itself and opens
+the browser automatically. In desktop mode it stores runtime data outside the repo:
+
+- macOS: `~/Library/Application Support/Estratto`
+- Windows: `%APPDATA%\Estratto`
+- Linux: `~/.local/share/estratto`
+
+That directory contains:
+
+- `config.yaml`
+- `estratto.db`
+- `<session_name>.session`
+- `staging/`
+
+For local development you can run the desktop launcher with:
+
+```bash
+./start-desktop.sh
+```
+
+### Build targets
+
+- One entrypoint: `./packaging/build.sh [all|macos|windows|linux]`
+- macOS `.app`: `packaging/macos/build-app.sh`
+- Windows installer: `packaging/windows/build-installer.ps1`
+- Linux `AppImage`: `packaging/linux/build-appimage.sh`
+
+Examples:
+
+```bash
+./packaging/build.sh all
+./packaging/build.sh macos
+```
+
+`all` builds the host-native artifact only, then reports the other targets as skipped.
+
+Install the build dependency first:
+
+```bash
+python3 -m pip install -r packaging/requirements-build.txt
+```
+
+Build on the target OS itself. The packaging scripts assume:
+
+- macOS: Python 3 plus `PyInstaller`
+- Windows: Python plus `PyInstaller` and Inno Setup (`iscc.exe` in `PATH`)
+- Linux: Python plus `PyInstaller` and a local `appimagetool-x86_64.AppImage`
+
 ## Running on a Raspberry Pi 4 (systemd)
 
 Tested against Raspberry Pi OS Bookworm (64-bit) with the Python 3.11 it ships. Use the

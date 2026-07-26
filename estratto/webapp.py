@@ -23,11 +23,12 @@ from . import tagger
 from .config import Config
 from .kavita_client import KavitaClient
 from .main import Pipeline, _build_kavita_client, setup_logging
+from .paths import static_dir
 from .telegram_client import EstrattoTelegramClient
 
 logger = logging.getLogger("estratto.web")
 
-STATIC_DIR = Path(__file__).parent.parent / "web" / "static"
+STATIC_DIR = static_dir()
 
 
 def _resolve_config_relative_path(base_dir: Path, raw_path: Optional[str]) -> Optional[Path]:
@@ -72,7 +73,7 @@ class AppState:
         self.telegram = EstrattoTelegramClient(
             api_id=int(cfg.get("telegram", "api_id")),
             api_hash=str(cfg.get("telegram", "api_hash")),
-            session_name=str(cfg.get("telegram", "session_name", default="estratto")),
+            session_name=cfg.telegram_session_name,
             channel=str(cfg.get("telegram", "channel")),
             staging_dir=cfg.staging_dir,
             allowed_extensions=cfg.allowed_extensions,
@@ -101,7 +102,7 @@ class AppState:
         self.telegram = EstrattoTelegramClient(
             api_id=int(self.cfg.get("telegram", "api_id")),
             api_hash=str(self.cfg.get("telegram", "api_hash")),
-            session_name=str(self.cfg.get("telegram", "session_name", default="estratto")),
+            session_name=self.cfg.telegram_session_name,
             channel=str(self.cfg.get("telegram", "channel")),
             staging_dir=self.cfg.staging_dir,
             allowed_extensions=self.cfg.allowed_extensions,
@@ -685,6 +686,7 @@ def create_app(config_path: str = None) -> FastAPI:
         response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Range"
         response.headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges"
+        response.headers["Cache-Control"] = "private, max-age=3600"
 
         logger.info(f"[File Serving] Response created successfully")
         return response
