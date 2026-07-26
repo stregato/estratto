@@ -22,7 +22,7 @@
   const zoomInBtn = document.getElementById("zoom-in-btn");
   const zoomInfo = document.getElementById("zoom-info");
   const outlineToggleBtn = document.getElementById("outline-toggle-btn");
-  const documentOutline = document.getElementById("document-outline");
+  const documentOutline = document.getElementById("document-outline") || document.getElementById("pdf-outline");
   const loadingOverlay = document.getElementById("viewer-loading");
   const loadingText = document.getElementById("viewer-loading-text");
 
