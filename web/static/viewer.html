@@ -68,6 +68,8 @@
     #viewer-content {
       display: flex;
       min-height: 100%;
+      min-width: 100%;
+      width: max-content;
     }
 
     #pdf-outline {
@@ -114,8 +116,10 @@
     }
 
     #pdf-stage {
-      flex: 1;
-      min-width: 0;
+      flex: 1 0 auto;
+      min-width: 100%;
+      display: flex;
+      justify-content: center;
     }
 
     #pdf-viewer {
@@ -124,7 +128,9 @@
       align-items: center;
       gap: 20px;
       padding: 20px 16px 40px;
-      width: 100%;
+      width: max-content;
+      min-width: 100%;
+      box-sizing: border-box;
     }
 
     .pdf-page-canvas {
@@ -269,6 +275,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
 
-  <script src="/static/viewer.js?v=14"></script>
+  <script src="/static/viewer.js?v=15"></script>
 </body>
 </html>
