@@ -20,9 +20,11 @@
     <div class="source-menu">
       <button id="source-toggle" class="settings-btn" title="Import Sources">⤓</button>
       <div id="source-dropdown" class="dropdown" style="display:none">
-        <button class="tab-btn" data-tab="telegram">Telegram</button>
+        <button id="local-upload-menu-btn" class="tab-btn" type="button">Upload from local machine</button>
         <button class="tab-btn" data-tab="arxiv">arXiv</button>
+        <button class="tab-btn" data-tab="telegram">Telegram</button>
       </div>
+      <input id="local-upload-input" type="file" hidden>
     </div>
     <button id="theme-toggle" class="settings-btn" title="Toggle theme">◐</button>
     <div class="settings-menu">

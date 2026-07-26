@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -62,6 +65,21 @@ def _find_existing_file(cfg: Config, record: Optional[db_module.FileRecord], mes
         if candidate.exists() and candidate.is_file():
             return candidate
     return None
+
+
+def _next_local_upload_id(database: db_module.Database) -> int:
+    while True:
+        message_id = -time.time_ns()
+        if database.get_record(message_id) is None:
+            return message_id
+
+
+def _local_upload_filename(message_id: int, original_name: str) -> str:
+    source = Path(original_name or "upload")
+    safe_name = source.name or "upload"
+    stem = Path(safe_name).stem or "upload"
+    suffix = Path(safe_name).suffix
+    return f"{stem}__local{abs(message_id)}{suffix}"
 
 
 class AppState:
@@ -430,6 +448,36 @@ def create_app(config_path: str = None) -> FastAPI:
         state.arxiv_downloading.add(doc_id)
         state.spawn(_run_arxiv_download(doc_id, arxiv_id, title, summary, authors, published))
         return {"status": "started"}
+
+    @app.post("/api/upload/local")
+    async def upload_local_file(file: UploadFile = File(...)):
+        filename = Path(file.filename or "").name
+        if not filename:
+            raise HTTPException(400, "Missing filename")
+
+        state.cfg.staging_dir.mkdir(parents=True, exist_ok=True)
+        message_id = _next_local_upload_id(state.db)
+        staging_path = state.cfg.staging_dir / _local_upload_filename(message_id, filename)
+
+        try:
+            with staging_path.open("wb") as handle:
+                shutil.copyfileobj(file.file, handle)
+        except Exception as exc:
+            raise HTTPException(400, f"Could not save uploaded file: {exc}") from exc
+        finally:
+            await file.close()
+
+        size = staging_path.stat().st_size if staging_path.exists() else None
+        state.db.upsert_catalog_entry(
+            message_id=message_id,
+            filename=filename,
+            caption="Uploaded from local machine",
+            size=size,
+            message_date=datetime.now(timezone.utc).isoformat(),
+            ext=Path(filename).suffix.lower(),
+        )
+        state.db.mark_downloaded(message_id, "local", filename, str(staging_path))
+        return {"status": "uploaded", "message_id": message_id, "filename": filename}
 
     @app.post("/api/delete/{message_id}")
     async def delete_file(message_id: int):

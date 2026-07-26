@@ -30,6 +30,49 @@
   const nextBtn = document.getElementById("next-page");
   const pageInfo = document.getElementById("page-info");
 
+  function applyThemePreference() {
+    let themePreference = "";
+    try {
+      themePreference = localStorage.getItem("themePreference") || "";
+    } catch (e) {
+      console.warn("Could not read theme preference:", e);
+    }
+
+    if ((themePreference !== "light" && themePreference !== "dark") && embedded && window.parent !== window) {
+      try {
+        themePreference = window.parent.document.documentElement.getAttribute("data-theme") || "";
+      } catch (e) {
+        console.warn("Could not read parent theme:", e);
+      }
+    }
+
+    if (themePreference === "light" || themePreference === "dark") {
+      document.documentElement.setAttribute("data-theme", themePreference);
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+    }
+  }
+
+  applyThemePreference();
+
+  window.addEventListener("storage", (event) => {
+    if (event.key === "themePreference") {
+      applyThemePreference();
+    }
+  });
+
+  if (embedded && window.parent !== window) {
+    try {
+      const parentRoot = window.parent.document.documentElement;
+      new MutationObserver(() => applyThemePreference()).observe(parentRoot, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+    } catch (e) {
+      console.warn("Could not observe parent theme:", e);
+    }
+  }
+
   if (embedded) {
     backBtn.style.display = "none";
     viewerToolbar.style.height = "42px";

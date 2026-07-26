@@ -20,6 +20,8 @@
 
   const sourceToggle = $("#source-toggle");
   const sourceDropdown = $("#source-dropdown");
+  const localUploadMenuBtn = $("#local-upload-menu-btn");
+  const localUploadInput = $("#local-upload-input");
   const themeToggle = $("#theme-toggle");
   const settingsToggle = $("#settings-toggle");
   const settingsDropdown = $("#settings-dropdown");
@@ -78,6 +80,50 @@
   });
 
   themeToggle.addEventListener("click", toggleThemePreference);
+
+  async function uploadLocalFile(file) {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const res = await fetch("/api/upload/local", {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      let detail = body.detail;
+      if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+      throw new Error(detail || `${res.status} ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  localUploadMenuBtn?.addEventListener("click", () => {
+    sourceDropdown.style.display = "none";
+    localUploadInput?.click();
+  });
+
+  localUploadInput?.addEventListener("change", async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    localUploadMenuBtn.disabled = true;
+    localUploadMenuBtn.textContent = "Uploading...";
+    try {
+      await uploadLocalFile(file);
+      await Promise.all([
+        loadCatalog(),
+        loadDownloadCatalog(),
+        loadTagFilters(),
+        loadDownloadTagFilters(),
+      ]);
+    } catch (err) {
+      alert(`Upload failed: ${err.message}`);
+    } finally {
+      localUploadMenuBtn.disabled = false;
+      localUploadMenuBtn.textContent = "Upload from local machine";
+      e.target.value = "";
+    }
+  });
 
   telegramAdvancedModal?.addEventListener("click", (e) => {
     if (e.target === telegramAdvancedModal) {
