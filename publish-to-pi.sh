@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 PI_HOST="${1:-${ESTRATTO_PI_HOST:-pi}}"
-PI_USER="${ESTRATTO_PI_USER:-pi}"
+PI_USER="${ESTRATTO_PI_USER:-ea}"
 PI_DIR="${ESTRATTO_PI_DIR:-~/estratto}"
 REMOTE_NAME="${ESTRATTO_GIT_REMOTE:-origin}"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -22,7 +22,7 @@ prompt_if_empty() {
 }
 
 prompt_if_empty PI_USER "Pi SSH user [$PI_USER]: "
-PI_USER="${PI_USER:-pi}"
+PI_USER="${PI_USER:-ea}"
 prompt_if_empty PI_DIR "Pi Estratto directory [$PI_DIR]: "
 PI_DIR="${PI_DIR:-~/estratto}"
 
