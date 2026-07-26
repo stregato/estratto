@@ -22,7 +22,7 @@
   const zoomInBtn = document.getElementById("zoom-in-btn");
   const zoomInfo = document.getElementById("zoom-info");
   const outlineToggleBtn = document.getElementById("outline-toggle-btn");
-  const pdfOutline = document.getElementById("pdf-outline");
+  const documentOutline = document.getElementById("document-outline");
   const loadingOverlay = document.getElementById("viewer-loading");
   const loadingText = document.getElementById("viewer-loading-text");
 
@@ -83,7 +83,7 @@
   let currentPage = 1;
   let totalPages = 1;
   let saveProgressTimer = null;
-  let pdfKeyHandler = null;
+  let viewerKeyHandler = null;
 
   // Detect file type from extension
   const ext = filename.split(".").pop().toLowerCase();
@@ -105,6 +105,12 @@
 
   function updateZoomInfo(scale) {
     zoomInfo.textContent = `${Math.round(scale * 100)}%`;
+  }
+
+  function clearViewerKeyHandler() {
+    if (!viewerKeyHandler) return;
+    document.removeEventListener("keydown", viewerKeyHandler);
+    viewerKeyHandler = null;
   }
 
   function updateFullscreenLabel() {
@@ -344,14 +350,14 @@
     async function loadOutline() {
       const outline = await pdfDoc.getOutline();
       if (!outline || !outline.length) {
-        pdfOutline.classList.remove("open");
-        pdfOutline.innerHTML = "";
+        documentOutline.classList.remove("open");
+        documentOutline.innerHTML = "";
         outlineToggleBtn.style.display = "none";
         return;
       }
 
-      pdfOutline.innerHTML = "";
-      pdfOutline.appendChild(await buildOutlineMarkup(outline));
+      documentOutline.innerHTML = "";
+      documentOutline.appendChild(await buildOutlineMarkup(outline));
       outlineToggleBtn.style.display = "inline-block";
       outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
     }
@@ -398,7 +404,7 @@
 
     outlineToggleBtn.onclick = () => {
       outlineOpen = !outlineOpen;
-      pdfOutline.classList.toggle("open", outlineOpen);
+      documentOutline.classList.toggle("open", outlineOpen);
       outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
     };
 
@@ -419,14 +425,15 @@
       await renderAllPages(currentPage, 0);
     }, { passive: false });
 
-    pdfKeyHandler = async (e) => {
+    clearViewerKeyHandler();
+    viewerKeyHandler = async (e) => {
       if (e.key === "ArrowLeft" && currentPage > 1) {
         scrollToPage(currentPage - 1);
       } else if (e.key === "ArrowRight" && currentPage < totalPages) {
         scrollToPage(currentPage + 1);
       }
     };
-    document.addEventListener("keydown", pdfKeyHandler);
+    document.addEventListener("keydown", viewerKeyHandler);
 
     currentViewer = "pdf";
   }
@@ -434,7 +441,10 @@
   // EPUB Viewer
   async function initEpubViewer() {
     const container = document.getElementById("epub-viewer");
+    const viewerContent = document.getElementById("viewer-content");
+    const viewerContainer = document.getElementById("viewer-container");
     container.style.display = "block";
+    viewerContent.style.display = "flex";
     showLoading("Loading EPUB...");
 
     const book = ePub(`/api/file/${messageId}`);
@@ -443,10 +453,108 @@
       height: "100%",
       spread: "none",
     });
+    let fontScale = 1;
+    let outlineOpen = false;
+
+    rendition.themes.register("light", {
+      body: {
+        color: "#111827",
+        background: "#f8fafc",
+      },
+      a: {
+        color: "#2563eb",
+      },
+    });
+    rendition.themes.register("dark", {
+      body: {
+        color: "#e5e7eb",
+        background: "#111827",
+      },
+      a: {
+        color: "#93c5fd",
+      },
+    });
+
+    function applyEpubTheme() {
+      const theme = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+      rendition.themes.select(theme);
+    }
+
+    function setFontScale(nextScale) {
+      fontScale = Math.max(0.85, Math.min(1.8, nextScale));
+      rendition.themes.fontSize(`${Math.round(fontScale * 100)}%`);
+      updateZoomInfo(fontScale);
+    }
+
+    async function saveEpubProgress(cfi) {
+      clearTimeout(saveProgressTimer);
+      saveProgressTimer = setTimeout(async () => {
+        try {
+          await api(`/api/progress/${messageId}`, {
+            method: "POST",
+            body: JSON.stringify({
+              current_page: currentPage,
+              total_pages: totalPages,
+              scroll_position: cfi || 0,
+            }),
+          });
+        } catch (e) {
+          console.error("Failed to save EPUB progress:", e);
+        }
+      }, 300);
+    }
+
+    async function buildEpubOutlineMarkup(items) {
+      const list = document.createElement("ul");
+      list.className = "outline-list";
+
+      for (const item of items || []) {
+        const entry = document.createElement("li");
+        const button = document.createElement("button");
+        button.className = "outline-link";
+        button.textContent = item.label || item.href || "Untitled";
+        button.addEventListener("click", async () => {
+          if (!item.href) return;
+          await rendition.display(item.href);
+        });
+        entry.appendChild(button);
+
+        if (item.subitems && item.subitems.length) {
+          entry.appendChild(await buildEpubOutlineMarkup(item.subitems));
+        }
+        list.appendChild(entry);
+      }
+
+      return list;
+    }
+
+    async function loadEpubOutline() {
+      const toc = book.navigation?.toc || [];
+      if (!toc.length) {
+        documentOutline.classList.remove("open");
+        documentOutline.innerHTML = "";
+        outlineToggleBtn.style.display = "none";
+        return;
+      }
+
+      documentOutline.innerHTML = "";
+      documentOutline.appendChild(await buildEpubOutlineMarkup(toc));
+      outlineToggleBtn.style.display = "inline-block";
+      outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
+    }
 
     // Load saved progress
     const progress = await api(`/api/progress/${messageId}`);
     const savedCfi = progress.scroll_position || null;
+
+    prevBtn.style.display = "inline-block";
+    nextBtn.style.display = "inline-block";
+    pageInfo.style.display = "inline";
+    zoomOutBtn.style.display = "inline-block";
+    zoomInBtn.style.display = "inline-block";
+    zoomInfo.style.display = "inline";
+    updateZoomInfo(fontScale);
+    applyEpubTheme();
 
     if (savedCfi && savedCfi !== 0) {
       await rendition.display(savedCfi);
@@ -457,41 +565,56 @@
 
     // Get total locations (approximate page count)
     book.ready.then(() => {
-      return book.locations.generate(1024);
+      applyEpubTheme();
+      return Promise.all([
+        book.locations.generate(1024),
+        loadEpubOutline(),
+      ]);
     }).then(() => {
       totalPages = book.locations.total || 1;
+      currentPage = Math.max(1, Number(progress.current_page) || 1);
       updatePageInfo();
     });
 
     rendition.on("relocated", (location) => {
       if (book.locations && book.locations.total) {
-        currentPage = location.start.location || 1;
+        currentPage = (location.start.location || 0) + 1;
         totalPages = book.locations.total;
         updatePageInfo();
-
-        // Save CFI for precise position
-        saveProgressTimer && clearTimeout(saveProgressTimer);
-        saveProgressTimer = setTimeout(async () => {
-          await api(`/api/progress/${messageId}`, {
-            method: "POST",
-            body: JSON.stringify({
-              current_page: currentPage,
-              total_pages: totalPages,
-              scroll_position: location.start.cfi,
-            }),
-          });
-        }, 1000);
       }
+      saveEpubProgress(location.start.cfi);
     });
+
+    outlineToggleBtn.onclick = () => {
+      outlineOpen = !outlineOpen;
+      documentOutline.classList.toggle("open", outlineOpen);
+      outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
+    };
 
     prevBtn.onclick = () => rendition.prev();
     nextBtn.onclick = () => rendition.next();
+    zoomOutBtn.onclick = () => setFontScale(fontScale - 0.1);
+    zoomInBtn.onclick = () => setFontScale(fontScale + 0.1);
+
+    viewerContainer.addEventListener("wheel", (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      setFontScale(fontScale + (e.deltaY < 0 ? 0.05 : -0.05));
+    }, { passive: false });
+
+    const observer = new MutationObserver(() => applyEpubTheme());
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
 
     // Keyboard navigation
-    document.addEventListener("keydown", (e) => {
+    clearViewerKeyHandler();
+    viewerKeyHandler = (e) => {
       if (e.key === "ArrowLeft") rendition.prev();
       else if (e.key === "ArrowRight") rendition.next();
-    });
+    };
+    document.addEventListener("keydown", viewerKeyHandler);
 
     currentViewer = "epub";
   }
