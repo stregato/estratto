@@ -689,8 +689,7 @@ def create_app(config_path: str = None) -> FastAPI:
         response.headers["Access-Control-Max-Age"] = "86400"
         return response
 
-    @app.get("/api/file/{message_id}")
-    async def serve_file(message_id: int):
+    def _build_file_response(message_id: int):
         import mimetypes
 
         record = state.db.get_record(message_id)
@@ -743,6 +742,14 @@ def create_app(config_path: str = None) -> FastAPI:
 
         logger.info(f"[File Serving] Response created successfully")
         return response
+
+    @app.head("/api/file/{message_id}")
+    async def serve_file_head(message_id: int):
+        return _build_file_response(message_id)
+
+    @app.get("/api/file/{message_id}")
+    async def serve_file(message_id: int):
+        return _build_file_response(message_id)
 
     # ---- Static frontend ------------------------------------------------------
 
