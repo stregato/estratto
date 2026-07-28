@@ -482,7 +482,13 @@
 
   async function removeMissingDocument(messageId) {
     try {
-      await api(`/api/delete/${messageId}`, { method: "POST" });
+      const res = await fetch(`/api/delete/${messageId}`, { method: "POST" });
+      if (!res.ok && res.status !== 404) {
+        const body = await res.json().catch(() => ({}));
+        let detail = body.detail;
+        if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+        throw new Error(detail || `${res.status} ${res.statusText}`);
+      }
     } catch (e) {
       console.error("Failed to remove missing document:", e);
     }
@@ -885,7 +891,7 @@
           await api("/api/arxiv/download", {
             method: "POST",
             body: JSON.stringify({
-              message_id: Number(btn.dataset.id),
+              message_id: btn.dataset.id,
               arxiv_id: btn.dataset.arxivId,
               title: btn.dataset.title,
               summary: btn.dataset.summary,

@@ -82,6 +82,10 @@ def _local_upload_filename(message_id: int, original_name: str) -> str:
     return f"{stem}__local{abs(message_id)}{suffix}"
 
 
+def _public_message_id(message_id: int) -> str:
+    return str(message_id)
+
+
 class AppState:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -275,6 +279,7 @@ def create_app(config_path: str = None) -> FastAPI:
         )
 
         for item in items:
+            item["message_id"] = _public_message_id(item["message_id"])
             item["file_exists"] = bool(item.get("status"))
 
         return {
@@ -377,7 +382,7 @@ def create_app(config_path: str = None) -> FastAPI:
             )
             record = state.db.get_record(entry.doc_id)
             items.append({
-                "message_id": entry.doc_id,
+                "message_id": _public_message_id(entry.doc_id),
                 "arxiv_id": entry.arxiv_id,
                 "filename": entry.filename,
                 "title": entry.title,
@@ -477,7 +482,7 @@ def create_app(config_path: str = None) -> FastAPI:
             ext=Path(filename).suffix.lower(),
         )
         state.db.mark_downloaded(message_id, "local", filename, str(staging_path))
-        return {"status": "uploaded", "message_id": message_id, "filename": filename}
+        return {"status": "uploaded", "message_id": _public_message_id(message_id), "filename": filename}
 
     @app.post("/api/delete/{message_id}")
     async def delete_file(message_id: int):
