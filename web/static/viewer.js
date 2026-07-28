@@ -443,9 +443,18 @@
     const container = document.getElementById("epub-viewer");
     const viewerContent = document.getElementById("viewer-content");
     const viewerContainer = document.getElementById("viewer-container");
+    const stage = document.getElementById("pdf-stage");
     container.style.display = "block";
     viewerContent.style.display = "flex";
     showLoading("Loading EPUB...");
+
+    function syncEpubViewport() {
+      const height = Math.max(viewerContainer.clientHeight, window.innerHeight - viewerToolbar.offsetHeight);
+      stage.style.height = `${height}px`;
+      container.style.height = `${height}px`;
+    }
+
+    syncEpubViewport();
 
     const book = ePub(`/api/file/${messageId}`);
     const rendition = book.renderTo("epub-viewer", {
@@ -606,6 +615,16 @@
     observer.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ["data-theme"],
+    });
+
+    window.addEventListener("resize", () => {
+      syncEpubViewport();
+      rendition.resize(container.clientWidth, container.clientHeight);
+    });
+
+    document.addEventListener("fullscreenchange", () => {
+      syncEpubViewport();
+      rendition.resize(container.clientWidth, container.clientHeight);
     });
 
     // Keyboard navigation

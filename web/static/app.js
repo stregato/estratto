@@ -22,12 +22,25 @@
   const sourceDropdown = $("#source-dropdown");
   const localUploadMenuBtn = $("#local-upload-menu-btn");
   const localUploadInput = $("#local-upload-input");
+  const websiteLinkMenuBtn = $("#website-link-menu-btn");
+  const websiteLinkModal = $("#website-link-modal");
+  const websiteLinkInput = $("#website-link-input");
+  const websiteLinkTitleInput = $("#website-link-title-input");
+  const websiteLinkMessage = $("#website-link-message");
+  const websiteLinkOpenBtn = $("#website-link-open-btn");
+  const websiteLinkModalClose = $("#website-link-modal-close");
   const themeToggle = $("#theme-toggle");
   const settingsToggle = $("#settings-toggle");
   const settingsDropdown = $("#settings-dropdown");
   const telegramAdvancedModal = $("#telegram-advanced-modal");
 
   let themePreference = localStorage.getItem("themePreference") || "";
+  const appHeader = document.querySelector("header");
+
+  function syncHeaderOffset() {
+    if (!appHeader) return;
+    document.documentElement.style.setProperty("--app-header-height", `${appHeader.offsetHeight}px`);
+  }
 
   function applyThemePreference() {
     if (themePreference === "light" || themePreference === "dark") {
@@ -50,6 +63,15 @@
   }
 
   applyThemePreference();
+  syncHeaderOffset();
+
+  if (appHeader) {
+    if ("ResizeObserver" in window) {
+      new ResizeObserver(() => syncHeaderOffset()).observe(appHeader);
+    } else {
+      window.addEventListener("resize", syncHeaderOffset);
+    }
+  }
 
   sourceToggle.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -125,6 +147,81 @@
     }
   });
 
+  function normalizeWebsiteUrl(value) {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    return `https://${trimmed}`;
+  }
+
+  function buildWebsiteDocumentId(url) {
+    return `website:${url}`;
+  }
+
+  function websiteLabelFromUrl(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "") || url;
+    } catch {
+      return url;
+    }
+  }
+
+  function openWebsiteModal() {
+    if (!websiteLinkModal) return;
+    websiteLinkMessage.textContent = "";
+    websiteLinkInput.value = "";
+    websiteLinkTitleInput.value = "";
+    websiteLinkModal.style.display = "block";
+    websiteLinkInput.focus();
+  }
+
+  function closeWebsiteModal() {
+    if (!websiteLinkModal) return;
+    websiteLinkModal.style.display = "none";
+  }
+
+  function openWebsiteFromModal() {
+    const url = normalizeWebsiteUrl(websiteLinkInput?.value || "");
+    if (!url) {
+      websiteLinkMessage.textContent = "Enter a website URL.";
+      return;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const title = (websiteLinkTitleInput?.value || "").trim() || websiteLabelFromUrl(parsed.toString());
+      openWebsiteTab(parsed.toString(), title);
+      closeWebsiteModal();
+    } catch {
+      websiteLinkMessage.textContent = "Enter a valid http or https URL.";
+    }
+  }
+
+  websiteLinkMenuBtn?.addEventListener("click", () => {
+    sourceDropdown.style.display = "none";
+    openWebsiteModal();
+  });
+
+  websiteLinkModalClose?.addEventListener("click", closeWebsiteModal);
+  websiteLinkOpenBtn?.addEventListener("click", openWebsiteFromModal);
+  websiteLinkModal?.addEventListener("click", (e) => {
+    if (e.target === websiteLinkModal) {
+      closeWebsiteModal();
+    }
+  });
+  websiteLinkInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      openWebsiteFromModal();
+    }
+  });
+  websiteLinkTitleInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      openWebsiteFromModal();
+    }
+  });
+
   telegramAdvancedModal?.addEventListener("click", (e) => {
     if (e.target === telegramAdvancedModal) {
       telegramAdvancedModal.style.display = "none";
@@ -196,7 +293,13 @@
   let telegramLoginStage = "phone";
   let openDocuments = JSON.parse(localStorage.getItem("openDocuments") || "[]")
     .filter((doc) => doc && doc.messageId && doc.filename)
-    .map((doc) => ({ messageId: String(doc.messageId), filename: String(doc.filename) }));
+    .map((doc) => ({
+      messageId: String(doc.messageId),
+      filename: String(doc.filename),
+      kind: doc.kind === "website" ? "website" : "file",
+      src: doc.kind === "website" && typeof doc.src === "string" ? doc.src : null,
+    }))
+    .filter((doc) => doc.kind !== "website" || doc.src);
   let activeDocumentId = localStorage.getItem("activeDocumentId");
   let activeAppTab = "catalog";
   let channelHistory = JSON.parse(localStorage.getItem("channelHistory") || "[]")
@@ -304,7 +407,9 @@
         views.appendChild(view);
       }
       const iframe = view.querySelector(".reader-frame");
-      const wantedSrc = `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&embedded=1`;
+      const wantedSrc = doc.kind === "website"
+        ? doc.src
+        : `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&embedded=1`;
       if (doc.messageId === activeDocumentId && iframe && iframe.getAttribute("src") !== wantedSrc) {
         iframe.setAttribute("src", wantedSrc);
       }
@@ -401,6 +506,22 @@
     const existing = openDocuments.find((doc) => doc.messageId === id);
     if (!existing) {
       openDocuments.push({ messageId: id, filename });
+      syncReaderPane();
+    }
+    activeDocumentId = id;
+    activateDocumentTab(id);
+  }
+
+  function openWebsiteTab(url, title) {
+    const id = buildWebsiteDocumentId(url);
+    const existing = openDocuments.find((doc) => doc.messageId === id);
+    if (!existing) {
+      openDocuments.push({
+        messageId: id,
+        filename: title,
+        kind: "website",
+        src: url,
+      });
       syncReaderPane();
     }
     activeDocumentId = id;
@@ -519,14 +640,11 @@
       downloaded_only: "true",
     });
 
-    if (activeFilter) {
-      if (activeFilter.includes(",")) {
-        params.set("search_any", activeFilter);
-      } else {
-        params.set("search", activeFilter);
-      }
-    } else if (searchTerm) {
+    if (searchTerm) {
       params.set("search", searchTerm);
+    }
+    if (activeFilter) {
+      params.set("search_any", activeFilter);
     }
 
     const response = await api(`/api/catalog?${params}`);
@@ -537,9 +655,7 @@
   $("#search-input").addEventListener("input", (e) => {
     searchTerm = e.target.value;
     page = 0;
-    activeFilter = null;  // Clear filter when searching
     loadCatalog();
-    loadTagFilters();  // Refresh to show no active filter
   });
 
   $("#prev-page").addEventListener("click", () => { if (page > 0) { page--; loadCatalog(); } });
@@ -554,9 +670,11 @@
       downloaded_only: false,  // Download tab shows all files
     });
 
-    const downloadQuery = [downloadSearchTerm, downloadActiveTagFilter].filter(Boolean).join(" ");
-    if (downloadQuery) {
-      params.set("search", downloadQuery);
+    if (downloadSearchTerm) {
+      params.set("search", downloadSearchTerm);
+    }
+    if (downloadActiveTagFilter) {
+      params.set("search_any", downloadActiveTagFilter);
     }
 
     const response = await api(`/api/catalog?${params}`);
@@ -969,8 +1087,6 @@
             activeFilter = null;  // Deactivate if clicking the same tag
           } else {
             activeFilter = tag;   // Activate this tag
-            searchTerm = "";      // Clear search when filtering
-            $("#search-input").value = "";
           }
 
           page = 0;  // Reset to first page

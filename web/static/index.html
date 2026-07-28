@@ -21,6 +21,7 @@
       <button id="source-toggle" class="settings-btn" title="Import Sources">⤓</button>
       <div id="source-dropdown" class="dropdown" style="display:none">
         <button id="local-upload-menu-btn" class="tab-btn" type="button">Upload from local machine</button>
+        <button id="website-link-menu-btn" class="tab-btn" type="button">Open website link</button>
         <button class="tab-btn" data-tab="arxiv">arXiv</button>
         <button class="tab-btn" data-tab="telegram">Telegram</button>
       </div>
@@ -290,6 +291,27 @@
           <button id="telegram-advanced-save-btn">Save</button>
         </div>
         <p id="telegram-advanced-message" class="muted"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="website-link-modal" class="modal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Open Website</h3>
+        <button id="website-link-modal-close" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <label>Website URL
+          <input id="website-link-input" type="url" placeholder="https://example.com">
+        </label>
+        <label style="margin-top: 1rem; display: block;">Tab label (optional)
+          <input id="website-link-title-input" type="text" placeholder="Example">
+        </label>
+        <div class="modal-actions">
+          <button id="website-link-open-btn">Open</button>
+        </div>
+        <p id="website-link-message" class="muted"></p>
       </div>
     </div>
   </div>

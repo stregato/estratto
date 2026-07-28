@@ -9,6 +9,7 @@
   --danger: #e05d5d;
   --ok: #4caf7d;
   --overlay: rgba(15, 17, 21, 0.72);
+  --app-header-height: 88px;
 }
 
 :root[data-theme="light"] {
@@ -41,6 +42,10 @@ body {
 }
 
 header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -48,6 +53,7 @@ header {
   padding: 1rem 1.5rem;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
+  z-index: 100;
 }
 
 header h1 {
@@ -105,7 +111,7 @@ nav {
 .tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 main {
-  padding: 1.25rem;
+  padding: calc(var(--app-header-height) + 1.25rem) 1.25rem 1.25rem;
   max-width: 1600px;
   margin: 0 auto;
 }
