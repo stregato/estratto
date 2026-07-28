@@ -551,6 +551,28 @@
       }, 300);
     }
 
+    async function navigateToEpubTarget(target) {
+      if (!target) return;
+
+      let resolvedTarget = target;
+
+      try {
+        if (typeof target === "string" && typeof book.cfiFromHref === "function") {
+          const cfiTarget = book.cfiFromHref(target);
+          if (cfiTarget) {
+            resolvedTarget = cfiTarget;
+          }
+        }
+      } catch (e) {
+        console.warn("EPUB CFI resolution failed, falling back to href:", target, e);
+      }
+
+      await rendition.display(resolvedTarget);
+      outlineOpen = false;
+      documentOutline.classList.remove("open");
+      outlineToggleBtn.textContent = "Contents";
+    }
+
     async function buildEpubOutlineMarkup(items) {
       const list = document.createElement("ul");
       list.className = "outline-list";
@@ -562,7 +584,7 @@
         button.textContent = item.label || item.href || "Untitled";
         button.addEventListener("click", async () => {
           if (!item.href) return;
-          await rendition.display(item.href);
+          await navigateToEpubTarget(item.href);
         });
         entry.appendChild(button);
 
