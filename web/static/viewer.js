@@ -745,7 +745,7 @@
   async function testFileAccess() {
     try {
       showLoading("Checking file access...");
-      const response = await fetch(`/api/file/${messageId}`);
+      const response = await fetch(`/api/file/${messageId}`, { method: "HEAD" });
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`File not accessible (${response.status}): ${errorText}`);
@@ -758,7 +758,6 @@
         status: response.status
       });
 
-      // Don't consume the response here, just verify it's accessible
       return true;
     } catch (e) {
       console.error('File access test failed:', e);
