@@ -220,6 +220,23 @@
       return pageCanvases[pageNumber - 1] || null;
     }
 
+    function getCurrentPdfPosition() {
+      if (!pageCanvases.length) {
+        return { page: currentPage, ratio: 0 };
+      }
+      const midpoint = container.scrollTop + container.clientHeight * 0.35;
+      let page = 1;
+      for (let i = 0; i < pageCanvases.length; i++) {
+        if (pageCanvases[i].offsetTop <= midpoint) page = i + 1;
+        else break;
+      }
+      const anchor = getPageAnchor(page);
+      const ratio = anchor
+        ? Math.max(0, Math.min(1, (container.scrollTop - anchor.offsetTop) / Math.max(anchor.offsetHeight, 1)))
+        : 0;
+      return { page, ratio };
+    }
+
     async function renderAllPages(restorePage = currentPage, restoreRatio = savedScrollRatio) {
       if (!pdfDoc) return;
       renderVersion += 1;
@@ -392,14 +409,16 @@
 
     zoomOutBtn.onclick = async () => {
       if (currentScale <= 0.7) return;
+      const position = getCurrentPdfPosition();
       currentScale = Math.max(0.7, currentScale - 0.15);
-      await renderAllPages(currentPage, 0);
+      await renderAllPages(position.page, position.ratio);
     };
 
     zoomInBtn.onclick = async () => {
       if (currentScale >= 2.5) return;
+      const position = getCurrentPdfPosition();
       currentScale = Math.min(2.5, currentScale + 0.15);
-      await renderAllPages(currentPage, 0);
+      await renderAllPages(position.page, position.ratio);
     };
 
     outlineToggleBtn.onclick = () => {
@@ -415,6 +434,7 @@
     container.addEventListener("wheel", async (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
+      const position = getCurrentPdfPosition();
       if (e.deltaY < 0 && currentScale < 2.5) {
         currentScale = Math.min(2.5, currentScale + 0.1);
       } else if (e.deltaY > 0 && currentScale > 0.7) {
@@ -422,7 +442,7 @@
       } else {
         return;
       }
-      await renderAllPages(currentPage, 0);
+      await renderAllPages(position.page, position.ratio);
     }, { passive: false });
 
     clearViewerKeyHandler();
@@ -444,14 +464,17 @@
     const viewerContent = document.getElementById("viewer-content");
     const viewerContainer = document.getElementById("viewer-container");
     const stage = document.getElementById("pdf-stage");
+    viewerContainer.classList.add("epub-mode");
     container.style.display = "block";
     viewerContent.style.display = "flex";
     showLoading("Loading EPUB...");
 
     function syncEpubViewport() {
       const height = Math.max(viewerContainer.clientHeight, window.innerHeight - viewerToolbar.offsetHeight);
-      stage.style.height = `${height}px`;
-      container.style.height = `${height}px`;
+      stage.style.minHeight = `${height}px`;
+      container.style.minHeight = `${height}px`;
+      stage.style.height = "auto";
+      container.style.height = "auto";
     }
 
     syncEpubViewport();
@@ -468,6 +491,8 @@
     const rendition = book.renderTo("epub-viewer", {
       width: "100%",
       height: "100%",
+      manager: "continuous",
+      flow: "scrolled-doc",
       spread: "none",
     });
     let fontScale = 1;
@@ -497,10 +522,15 @@
       rendition.themes.select(theme);
     }
 
-    function setFontScale(nextScale) {
+    async function setFontScale(nextScale) {
       fontScale = Math.max(0.85, Math.min(1.8, nextScale));
+      const location = rendition.currentLocation();
+      const cfi = location?.start?.cfi || null;
       rendition.themes.fontSize(`${Math.round(fontScale * 100)}%`);
       updateZoomInfo(fontScale);
+      if (cfi) {
+        await rendition.display(cfi);
+      }
     }
 
     async function saveEpubProgress(cfi) {
@@ -608,10 +638,14 @@
       outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
     };
 
-    prevBtn.onclick = () => rendition.prev();
-    nextBtn.onclick = () => rendition.next();
-    zoomOutBtn.onclick = () => setFontScale(fontScale - 0.1);
-    zoomInBtn.onclick = () => setFontScale(fontScale + 0.1);
+    prevBtn.onclick = () => {
+      viewerContainer.scrollBy({ top: -Math.max(240, viewerContainer.clientHeight * 0.9), behavior: "smooth" });
+    };
+    nextBtn.onclick = () => {
+      viewerContainer.scrollBy({ top: Math.max(240, viewerContainer.clientHeight * 0.9), behavior: "smooth" });
+    };
+    zoomOutBtn.onclick = async () => setFontScale(fontScale - 0.1);
+    zoomInBtn.onclick = async () => setFontScale(fontScale + 0.1);
 
     viewerContainer.addEventListener("wheel", (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -627,19 +661,22 @@
 
     window.addEventListener("resize", () => {
       syncEpubViewport();
-      rendition.resize(container.clientWidth, container.clientHeight);
+      rendition.resize(viewerContainer.clientWidth, viewerContainer.clientHeight);
     });
 
     document.addEventListener("fullscreenchange", () => {
       syncEpubViewport();
-      rendition.resize(container.clientWidth, container.clientHeight);
+      rendition.resize(viewerContainer.clientWidth, viewerContainer.clientHeight);
     });
 
     // Keyboard navigation
     clearViewerKeyHandler();
     viewerKeyHandler = (e) => {
-      if (e.key === "ArrowLeft") rendition.prev();
-      else if (e.key === "ArrowRight") rendition.next();
+      if (e.key === "ArrowLeft") {
+        viewerContainer.scrollBy({ top: -Math.max(160, viewerContainer.clientHeight * 0.75), behavior: "smooth" });
+      } else if (e.key === "ArrowRight") {
+        viewerContainer.scrollBy({ top: Math.max(160, viewerContainer.clientHeight * 0.75), behavior: "smooth" });
+      }
     };
     document.addEventListener("keydown", viewerKeyHandler);
 
