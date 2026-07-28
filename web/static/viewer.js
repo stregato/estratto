@@ -456,7 +456,15 @@
 
     syncEpubViewport();
 
-    const book = ePub(`/api/file/${messageId}`);
+    showLoading("Loading EPUB file...");
+    const epubResponse = await fetch(`/api/file/${messageId}`);
+    if (!epubResponse.ok) {
+      throw new Error(`EPUB fetch failed (${epubResponse.status})`);
+    }
+    const epubData = await epubResponse.arrayBuffer();
+
+    showLoading("Opening EPUB...");
+    const book = ePub(epubData);
     const rendition = book.renderTo("epub-viewer", {
       width: "100%",
       height: "100%",
