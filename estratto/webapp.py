@@ -104,6 +104,7 @@ class AppState:
         self.indexing = False
         self.index_progress = 0
         self.arxiv_downloading: set[int] = set()
+        self.telegram_downloading: set[int] = set()
         self.listen_task: Optional[asyncio.Task] = None
         self.scan_flush_task: Optional[asyncio.Task] = None
         self.background_tasks: set[asyncio.Task] = set()
@@ -281,6 +282,8 @@ def create_app(config_path: str = None) -> FastAPI:
         )
 
         for item in items:
+            if source == "telegram" and item["message_id"] in state.telegram_downloading:
+                item["status"] = "downloading"
             item["message_id"] = _public_message_id(item["message_id"])
             item["file_exists"] = bool(item.get("status"))
 
@@ -336,11 +339,15 @@ def create_app(config_path: str = None) -> FastAPI:
         except Exception as exc:
             logger.exception("Download/process failed for message %s", message_id)
             state.db.mark_failed(message_id, str(exc))
+        finally:
+            state.telegram_downloading.discard(message_id)
 
     @app.post("/api/download/{message_id}")
     async def download(message_id: int):
         if not await state.telegram.is_authorized():
             raise HTTPException(400, "Log in to Telegram first")
+        if message_id in state.telegram_downloading:
+            return {"status": "already_running"}
         status_now = state.db.get_status(message_id)
         if status_now in (
             db_module.STATUS_SORTED,
@@ -348,6 +355,7 @@ def create_app(config_path: str = None) -> FastAPI:
             db_module.STATUS_NEEDS_REVIEW,
         ):
             return {"status": "already_processed", "current_status": status_now}
+        state.telegram_downloading.add(message_id)
         state.spawn(_run_download(message_id))
         return {"status": "started"}
 

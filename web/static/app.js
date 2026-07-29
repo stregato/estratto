@@ -697,6 +697,7 @@
 
     for (const item of items) {
       const tr = document.createElement("tr");
+      const isDownloading = item.status === "downloading";
       const canDownload = !item.status || item.status === "failed";
       const isDownloaded = item.status && item.status !== "available";
       const filename = item.filename ?? "";
@@ -716,7 +717,8 @@
         <td>${(item.message_date ?? "").slice(0, 10)}</td>
         <td><button class="tag-btn" data-id="${item.message_id}" data-filename="${filename}">🏷️</button></td>
         <td>
-          ${canDownload ? `<button data-id="${item.message_id}" class="dl-btn">Download</button>` : ""}
+          ${isDownloading ? `<button class="dl-btn" disabled>⏳</button>` : ""}
+          ${!isDownloading && canDownload ? `<button data-id="${item.message_id}" class="dl-btn">Download</button>` : ""}
           ${isDownloaded ? `<button data-id="${item.message_id}" data-path="${item.final_path || item.staging_path || ""}" class="trash-btn" title="Delete">🗑️</button>` : ""}
         </td>
       `;
@@ -740,10 +742,12 @@
     // Download button listeners
     $$(".dl-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
+        if (btn.disabled) return;
         btn.disabled = true;
         btn.textContent = "⏳";
         try {
           await api(`/api/download/${btn.dataset.id}`, { method: "POST" });
+          loadDownloadCatalog();
           setTimeout(() => loadDownloadCatalog(), 1000);
         } catch (e) {
           alert(`Download failed: ${e.message}`);
