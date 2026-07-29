@@ -268,6 +268,7 @@ def create_app(config_path: str = None) -> FastAPI:
         offset: int = 0,
         downloaded_only: bool = False,
         search_any: Optional[str] = None,
+        source: Optional[str] = None,
     ):
         search_any_terms = [term.strip() for term in (search_any or "").split(",") if term.strip()]
         items = state.db.catalog(
@@ -276,6 +277,7 @@ def create_app(config_path: str = None) -> FastAPI:
             offset=offset,
             downloaded_only=downloaded_only,
             search_any=search_any_terms,
+            source=source,
         )
 
         for item in items:
@@ -288,6 +290,7 @@ def create_app(config_path: str = None) -> FastAPI:
                 search=search,
                 downloaded_only=downloaded_only,
                 search_any=search_any_terms,
+                source=source,
             ),
         }
 
@@ -304,12 +307,12 @@ def create_app(config_path: str = None) -> FastAPI:
                     size=getattr(message.document, "size", None),
                     message_date=message.date.isoformat() if message.date else None,
                     ext=Path(filename).suffix.lower(),
+                    source="telegram",
                 )
                 state.index_progress += 1
 
-            # Re-scan full history each time so newly-allowed extensions (for example EPUB)
-            # are picked up even when their messages are older than the last indexed PDF.
-            await state.telegram.index_channel(on_message, min_id=0)
+            last_message_id = state.db.last_indexed_message_id(source="telegram") or 0
+            await state.telegram.index_channel(on_message, min_id=last_message_id)
         except Exception:
             logger.exception("Indexing failed")
         finally:
@@ -379,6 +382,7 @@ def create_app(config_path: str = None) -> FastAPI:
                 size=None,
                 message_date=arxiv_client.message_date_for_catalog(entry.published),
                 ext=".pdf",
+                source="arxiv",
             )
             record = state.db.get_record(entry.doc_id)
             items.append({
@@ -420,6 +424,7 @@ def create_app(config_path: str = None) -> FastAPI:
                 size=path.stat().st_size if path.exists() else None,
                 message_date=arxiv_client.message_date_for_catalog(published),
                 ext=".pdf",
+                source="arxiv",
             )
             state.db.ensure_confirmed_tag("arxiv")
             state.db.tag_document(doc_id, "arxiv", auto_tagged=True)
@@ -480,6 +485,7 @@ def create_app(config_path: str = None) -> FastAPI:
             size=size,
             message_date=datetime.now(timezone.utc).isoformat(),
             ext=Path(filename).suffix.lower(),
+            source="local",
         )
         state.db.mark_downloaded(message_id, "local", filename, str(staging_path))
         return {"status": "uploaded", "message_id": _public_message_id(message_id), "filename": filename}

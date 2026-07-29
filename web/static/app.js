@@ -674,6 +674,7 @@
       limit: PAGE_SIZE,
       offset: downloadPage * PAGE_SIZE,
       downloaded_only: false,  // Download tab shows all files
+      source: "telegram",
     });
 
     if (downloadSearchTerm) {
@@ -981,7 +982,9 @@
       setTimeout(pollIndexStatus, 2000);
     } else {
       $("#index-status").textContent = "";
-      loadDownloadCatalog(); // Final refresh when indexing completes
+      if (downloadPage === 0) {
+        loadDownloadCatalog();
+      }
     }
   }
 

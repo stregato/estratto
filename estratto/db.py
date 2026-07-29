@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS catalog (
     size INTEGER,
     message_date TEXT,
     ext TEXT,
+    source TEXT,
     indexed_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -92,6 +93,7 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         self._conn.executescript(_SCHEMA)
+        self._ensure_schema()
         self._conn.commit()
 
     def close(self) -> None:
@@ -102,6 +104,19 @@ class Database:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+    def _ensure_schema(self) -> None:
+        with self._lock:
+            columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(catalog)").fetchall()
+            }
+            if "source" not in columns:
+                self._conn.execute("ALTER TABLE catalog ADD COLUMN source TEXT")
+                self._conn.execute("UPDATE catalog SET source = 'telegram' WHERE source IS NULL")
+
+    def _catalog_source_expr(self) -> str:
+        return "COALESCE(c.source, 'telegram')"
 
     @contextmanager
     def _cursor(self) -> Iterator[sqlite3.Cursor]:
@@ -269,20 +284,22 @@ class Database:
         size: Optional[int],
         message_date: Optional[str],
         ext: str,
+        source: str,
     ) -> None:
         with self._cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO catalog (message_id, filename, caption, size, message_date, ext)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO catalog (message_id, filename, caption, size, message_date, ext, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(message_id) DO UPDATE SET
                     filename=excluded.filename,
                     caption=excluded.caption,
                     size=excluded.size,
                     message_date=excluded.message_date,
-                    ext=excluded.ext
+                    ext=excluded.ext,
+                    source=excluded.source
                 """,
-                (message_id, filename, caption, size, message_date, ext),
+                (message_id, filename, caption, size, message_date, ext, source),
             )
 
     def catalog(
@@ -292,11 +309,14 @@ class Database:
         offset: int = 0,
         downloaded_only: bool = False,
         search_any: Optional[list[str]] = None,
+        source: Optional[str] = None,
     ) -> list[dict]:
         """Catalog entries left-joined with processing status, newest first."""
+        source_expr = self._catalog_source_expr()
         query = """
             SELECT c.message_id, c.filename, c.caption, c.size, c.message_date, c.ext,
-                   f.status, f.final_path, f.staging_path, f.error
+                   f.status, f.final_path, f.staging_path, f.error,
+                   """ + source_expr + """ AS source
             FROM catalog c
             LEFT JOIN files f ON f.message_id = c.message_id
         """
@@ -321,6 +341,10 @@ class Database:
         if downloaded_only:
             where_clauses.append("f.status IS NOT NULL")
 
+        if source:
+            where_clauses.append(f"{source_expr} = ?")
+            params.append(source)
+
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
 
@@ -336,14 +360,19 @@ class Database:
         search: Optional[str] = None,
         downloaded_only: bool = False,
         search_any: Optional[list[str]] = None,
+        source: Optional[str] = None,
     ) -> int:
-        query = "SELECT COUNT(*) AS n FROM catalog c"
+        source_expr = self._catalog_source_expr()
+        query = "SELECT COUNT(*) AS n FROM catalog c LEFT JOIN files f ON f.message_id = c.message_id"
         params: list = []
         where_clauses = []
 
         if downloaded_only:
-            query += " LEFT JOIN files f ON f.message_id = c.message_id"
             where_clauses.append("f.status IS NOT NULL")
+
+        if source:
+            where_clauses.append(f"{source_expr} = ?")
+            params.append(source)
 
         if search:
             where_clauses.append("(c.filename LIKE ? OR c.caption LIKE ?)")
@@ -367,9 +396,19 @@ class Database:
             cur = self._conn.execute(query, params)
             return cur.fetchone()["n"]
 
-    def last_indexed_message_id(self) -> Optional[int]:
+    def last_indexed_message_id(self, source: Optional[str] = None) -> Optional[int]:
+        source_expr = self._catalog_source_expr()
+        query = f"""
+            SELECT MAX(c.message_id) AS m
+            FROM catalog c
+            LEFT JOIN files f ON f.message_id = c.message_id
+        """
+        params: list = []
+        if source:
+            query += f" WHERE {source_expr} = ?"
+            params.append(source)
         with self._lock:
-            cur = self._conn.execute("SELECT MAX(message_id) AS m FROM catalog")
+            cur = self._conn.execute(query, params)
             row = cur.fetchone()
             return row["m"] if row and row["m"] is not None else None
 
