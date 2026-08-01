@@ -752,6 +752,7 @@ def create_app(config_path: str = None) -> FastAPI:
         response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Range"
         response.headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges"
+        response.headers["Accept-Ranges"] = "bytes"
         response.headers["Cache-Control"] = "private, max-age=3600"
 
         logger.info(f"[File Serving] Response created successfully")

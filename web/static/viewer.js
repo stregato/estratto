@@ -199,9 +199,14 @@
     let pdfDoc = null;
     let currentScale = 1.2;
     let renderVersion = 0;
-    let pageCanvases = [];
+    let pageEntries = [];
     let suppressScrollSave = false;
     let outlineOpen = false;
+    let estimatedPageWidth = 0;
+    let estimatedPageHeight = 0;
+    let renderQueue = Promise.resolve();
+    let isRestoringPosition = false;
+    const RENDER_RADIUS = 2;
 
     pdfViewer.style.display = "flex";
     showLoading("Loading PDF... 0%");
@@ -217,17 +222,145 @@
     const savedScrollRatio = Number(progress.scroll_position) || 0;
 
     function getPageAnchor(pageNumber) {
-      return pageCanvases[pageNumber - 1] || null;
+      return pageEntries[pageNumber - 1]?.wrapper || null;
+    }
+
+    function clampPage(pageNumber) {
+      return Math.max(1, Math.min(totalPages, pageNumber));
+    }
+
+    function createPageShell(pageNumber) {
+      const pageWrapper = document.createElement("div");
+      pageWrapper.className = "pdf-page";
+      pageWrapper.dataset.page = String(pageNumber);
+
+      const canvas = document.createElement("canvas");
+      canvas.className = "pdf-page-canvas";
+      canvas.dataset.page = String(pageNumber);
+      pageWrapper.appendChild(canvas);
+
+      const textLayer = document.createElement("div");
+      textLayer.className = "pdf-text-layer";
+      pageWrapper.appendChild(textLayer);
+
+      pdfViewer.appendChild(pageWrapper);
+      pageEntries[pageNumber - 1] = {
+        wrapper: pageWrapper,
+        canvas,
+        textLayer,
+        width: estimatedPageWidth,
+        height: estimatedPageHeight,
+        renderedScale: null,
+        renderPromise: null,
+      };
+      applyPageDimensions(pageNumber, estimatedPageWidth, estimatedPageHeight);
+    }
+
+    function applyPageDimensions(pageNumber, width, height) {
+      const entry = pageEntries[pageNumber - 1];
+      if (!entry) return;
+      entry.width = Math.max(1, Math.floor(width));
+      entry.height = Math.max(1, Math.floor(height));
+      entry.wrapper.style.width = `${entry.width}px`;
+      entry.wrapper.style.height = `${entry.height}px`;
+      entry.canvas.style.width = `${entry.width}px`;
+      entry.canvas.style.height = `${entry.height}px`;
+      entry.textLayer.style.width = `${entry.width}px`;
+      entry.textLayer.style.height = `${entry.height}px`;
+    }
+
+    function clearPageRender(pageNumber) {
+      const entry = pageEntries[pageNumber - 1];
+      if (!entry || entry.renderedScale === null) return;
+      entry.canvas.width = 0;
+      entry.canvas.height = 0;
+      entry.textLayer.replaceChildren();
+      entry.renderedScale = null;
+    }
+
+    async function renderPage(pageNumber, version) {
+      const entry = pageEntries[pageNumber - 1];
+      if (!entry) return;
+      if (entry.renderedScale === currentScale) return;
+      if (entry.renderPromise) {
+        await entry.renderPromise;
+        if (entry.renderedScale === currentScale) return;
+      }
+
+      entry.renderPromise = (async () => {
+        const page = await pdfDoc.getPage(pageNumber);
+        if (version !== renderVersion) return;
+        const viewport = page.getViewport({ scale: currentScale });
+        const outputScale = window.devicePixelRatio || 1;
+        applyPageDimensions(pageNumber, viewport.width, viewport.height);
+
+        entry.canvas.width = Math.floor(viewport.width * outputScale);
+        entry.canvas.height = Math.floor(viewport.height * outputScale);
+
+        await page.render({
+          canvasContext: entry.canvas.getContext("2d"),
+          viewport,
+          transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null,
+        }).promise;
+        if (version !== renderVersion) return;
+
+        const textContent = await page.getTextContent();
+        entry.textLayer.replaceChildren();
+        await pdfjsLib.renderTextLayer({
+          textContentSource: textContent,
+          container: entry.textLayer,
+          viewport,
+          textDivs: [],
+        }).promise;
+        if (version !== renderVersion) return;
+        entry.renderedScale = currentScale;
+      })();
+
+      try {
+        await entry.renderPromise;
+      } finally {
+        entry.renderPromise = null;
+      }
+    }
+
+    function trimRenderedPages(centerPage) {
+      const keepStart = clampPage(centerPage - RENDER_RADIUS);
+      const keepEnd = clampPage(centerPage + RENDER_RADIUS);
+      for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
+        if (pageNumber < keepStart || pageNumber > keepEnd) {
+          clearPageRender(pageNumber);
+        }
+      }
+    }
+
+    function queueVisibleRender(centerPage, { immediate = false } = {}) {
+      if (!pdfDoc) return Promise.resolve();
+      const version = renderVersion;
+      const start = clampPage(centerPage - RENDER_RADIUS);
+      const end = clampPage(centerPage + RENDER_RADIUS);
+      const run = async () => {
+        for (let pageNumber = start; pageNumber <= end; pageNumber += 1) {
+          await renderPage(pageNumber, version);
+          if (version !== renderVersion) return;
+        }
+        trimRenderedPages(centerPage);
+      };
+      if (immediate) {
+        renderQueue = run();
+      } else {
+        renderQueue = renderQueue.then(run);
+      }
+      return renderQueue;
     }
 
     function getCurrentPdfPosition() {
-      if (!pageCanvases.length) {
+      if (!pageEntries.length) {
         return { page: currentPage, ratio: 0 };
       }
       const midpoint = container.scrollTop + container.clientHeight * 0.35;
       let page = 1;
-      for (let i = 0; i < pageCanvases.length; i++) {
-        if (pageCanvases[i].offsetTop <= midpoint) page = i + 1;
+      for (let i = 0; i < pageEntries.length; i++) {
+        if (pageEntries[i].wrapper.offsetTop <= midpoint) page = i + 1;
         else break;
       }
       const anchor = getPageAnchor(page);
@@ -242,52 +375,19 @@
       renderVersion += 1;
       const version = renderVersion;
       pdfViewer.innerHTML = "";
-      pageCanvases = [];
+      pageEntries = [];
       updateZoomInfo(currentScale);
 
-      for (let i = 1; i <= totalPages; i++) {
-        const page = await pdfDoc.getPage(i);
-        if (version !== renderVersion) return;
-        const viewport = page.getViewport({ scale: currentScale });
-        const outputScale = window.devicePixelRatio || 1;
-        const pageWrapper = document.createElement("div");
-        pageWrapper.className = "pdf-page";
-        const canvas = document.createElement("canvas");
-        canvas.className = "pdf-page-canvas";
-        canvas.dataset.page = String(i);
-        canvas.width = Math.floor(viewport.width * outputScale);
-        canvas.height = Math.floor(viewport.height * outputScale);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
-        pageWrapper.style.width = `${Math.floor(viewport.width)}px`;
-        pageWrapper.style.height = `${Math.floor(viewport.height)}px`;
-        pageWrapper.appendChild(canvas);
-        const textLayer = document.createElement("div");
-        textLayer.className = "pdf-text-layer";
-        textLayer.style.width = `${Math.floor(viewport.width)}px`;
-        textLayer.style.height = `${Math.floor(viewport.height)}px`;
-        pageWrapper.appendChild(textLayer);
-        pdfViewer.appendChild(pageWrapper);
-        pageCanvases.push(canvas);
-
-        await page.render({
-          canvasContext: canvas.getContext("2d"),
-          viewport,
-          transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null,
-        }).promise;
-
-        const textContent = await page.getTextContent();
-        await pdfjsLib.renderTextLayer({
-          textContentSource: textContent,
-          container: textLayer,
-          viewport,
-          textDivs: [],
-        }).promise;
+      for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
+        createPageShell(pageNumber);
       }
 
       currentPage = Math.max(1, Math.min(restorePage, totalPages));
       updatePageInfo();
       suppressScrollSave = true;
+      isRestoringPosition = true;
+      await queueVisibleRender(currentPage, { immediate: true });
+      if (version !== renderVersion) return;
       requestAnimationFrame(() => {
         const anchor = getPageAnchor(currentPage);
         if (anchor) {
@@ -298,21 +398,23 @@
           container.scrollTop = 0;
         }
         setTimeout(() => {
+          isRestoringPosition = false;
           suppressScrollSave = false;
         }, 150);
       });
     }
 
     function syncCurrentPageFromScroll() {
-      if (!pageCanvases.length) return;
+      if (!pageEntries.length) return;
       const midpoint = container.scrollTop + container.clientHeight * 0.35;
       let nextPage = 1;
-      for (let i = 0; i < pageCanvases.length; i++) {
-        if (pageCanvases[i].offsetTop <= midpoint) nextPage = i + 1;
+      for (let i = 0; i < pageEntries.length; i++) {
+        if (pageEntries[i].wrapper.offsetTop <= midpoint) nextPage = i + 1;
         else break;
       }
       currentPage = nextPage;
       updatePageInfo();
+      queueVisibleRender(currentPage);
       const anchor = getPageAnchor(currentPage);
       const scrollRatio = anchor
         ? Math.max(0, Math.min(1, (container.scrollTop - anchor.offsetTop) / Math.max(anchor.offsetHeight, 1)))
@@ -380,7 +482,13 @@
     }
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
-    const loadingTask = pdfjsLib.getDocument(`/api/file/${messageId}`);
+    const loadingTask = pdfjsLib.getDocument({
+      url: `/api/file/${messageId}`,
+      disableAutoFetch: true,
+      disableStream: false,
+      disableRange: false,
+      rangeChunkSize: 262144,
+    });
     loadingTask.onProgress = (progressData) => {
       if (!progressData?.total) {
         showLoading("Loading PDF...");
@@ -392,8 +500,12 @@
     pdfDoc = await loadingTask.promise;
     totalPages = pdfDoc.numPages || 1;
     if (currentPage > totalPages) currentPage = totalPages;
+    const firstPage = await pdfDoc.getPage(1);
+    const initialViewport = firstPage.getViewport({ scale: currentScale });
+    estimatedPageWidth = Math.max(1, Math.floor(initialViewport.width));
+    estimatedPageHeight = Math.max(1, Math.floor(initialViewport.height));
     await loadOutline();
-    showLoading("Rendering pages...");
+    showLoading("Rendering first pages...");
     await renderAllPages(currentPage, savedScrollRatio);
     hideLoading();
 
@@ -430,6 +542,10 @@
     container.addEventListener("scroll", () => {
       syncCurrentPageFromScroll();
     });
+
+    if (!isRestoringPosition) {
+      queueVisibleRender(currentPage);
+    }
 
     container.addEventListener("wheel", async (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -479,15 +595,8 @@
 
     syncEpubViewport();
 
-    showLoading("Loading EPUB file...");
-    const epubResponse = await fetch(`/api/file/${messageId}`);
-    if (!epubResponse.ok) {
-      throw new Error(`EPUB fetch failed (${epubResponse.status})`);
-    }
-    const epubData = await epubResponse.arrayBuffer();
-
     showLoading("Opening EPUB...");
-    const book = ePub(epubData);
+    const book = ePub(`/api/file/${messageId}`);
     const rendition = book.renderTo("epub-viewer", {
       width: "100%",
       height: "100%",
@@ -635,14 +744,17 @@
     // Get total locations (approximate page count)
     book.ready.then(() => {
       applyEpubTheme();
-      return Promise.all([
-        book.locations.generate(1024),
-        loadEpubOutline(),
-      ]);
+      return loadEpubOutline();
     }).then(() => {
-      totalPages = book.locations.total || 1;
-      currentPage = Math.max(1, Number(progress.current_page) || 1);
-      updatePageInfo();
+      window.setTimeout(() => {
+        book.locations.generate(1024).then(() => {
+          totalPages = book.locations.total || 1;
+          currentPage = Math.max(1, Number(progress.current_page) || 1);
+          updatePageInfo();
+        }).catch((e) => {
+          console.warn("EPUB location generation failed:", e);
+        });
+      }, 0);
     });
 
     rendition.on("relocated", (location) => {
