@@ -443,9 +443,11 @@
       const previousScale = currentScale;
       if (nextScale === previousScale) return;
       const position = getCurrentPdfPosition();
-      const anchor = getPageAnchor(position.page);
-      const anchorOffset = anchor ? container.scrollTop - anchor.offsetTop : 0;
+      const targetPage = clampPage(position.page || currentPage);
 
+      currentPage = targetPage;
+      updatePageInfo();
+      suppressScrollSave = true;
       currentScale = nextScale;
       renderVersion += 1;
       updateZoomInfo(currentScale);
@@ -455,14 +457,19 @@
       resizePageShells(scaleRatio);
 
       requestAnimationFrame(() => {
-        const nextAnchor = getPageAnchor(position.page);
+        const nextAnchor = getPageAnchor(targetPage);
         if (nextAnchor) {
-          container.scrollTop = nextAnchor.offsetTop + anchorOffset * scaleRatio;
+          const pageHeight = Math.max(nextAnchor.offsetHeight, 1);
+          container.scrollTop = nextAnchor.offsetTop + Math.max(0, Math.min(position.ratio || 0, 1)) * pageHeight;
         }
-        queueVisibleRender(position.page, { immediate: true, radius: 0 }).catch((e) => {
+        queueVisibleRender(targetPage, { immediate: true, radius: 0 }).catch((e) => {
           console.error("Current PDF page rerender failed:", e);
         });
-        queueVisibleRender(position.page, { radius: ACTIVE_RENDER_RADIUS });
+        queueVisibleRender(targetPage, { radius: ACTIVE_RENDER_RADIUS });
+        window.setTimeout(() => {
+          suppressScrollSave = false;
+          savePdfProgress(Math.max(0, Math.min(position.ratio || 0, 1)));
+        }, 120);
       });
     }
 
