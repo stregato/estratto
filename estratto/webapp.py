@@ -19,6 +19,8 @@ from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from bs4 import BeautifulSoup
+import requests
 
 from . import arxiv_client
 from . import db as db_module
@@ -94,6 +96,31 @@ def _parse_range_header(range_header: Optional[str], file_size: int) -> Optional
     if start < 0 or end < start or start >= file_size:
         raise HTTPException(416, "Range not satisfiable")
     return start, min(end, file_size - 1)
+
+
+def _fetch_website_title(url: str, timeout: int = 8) -> str:
+    parsed = requests.utils.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(400, "Only http and https URLs are supported")
+
+    try:
+        response = requests.get(
+            url,
+            timeout=timeout,
+            headers={
+                "User-Agent": "Estratto/1.0 (+website title fetch)",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise HTTPException(400, f"Could not fetch website: {exc}") from exc
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    title = soup.title.string.strip() if soup.title and soup.title.string else ""
+    if not title:
+        raise HTTPException(404, "No page title found")
+    return title
 
 
 def _next_local_upload_id(database: db_module.Database) -> int:
@@ -724,6 +751,11 @@ def create_app(config_path: str = None) -> FastAPI:
             "filename": catalog_entry.get("filename") if catalog_entry else None,
             "ext": actual_ext or (catalog_entry.get("ext") if catalog_entry else None),
         }
+
+    @app.get("/api/website_title")
+    async def website_title(url: str):
+        title = await asyncio.to_thread(_fetch_website_title, url)
+        return {"title": title}
 
     # ---- File serving ---------------------------------------------------------
 

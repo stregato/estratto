@@ -182,20 +182,14 @@
   }
 
   async function toggleFullscreen() {
-    const target = embedded ? document.documentElement : viewerContainer;
-    const canNativeFullscreen = typeof target.requestFullscreen === "function" && typeof document.exitFullscreen === "function";
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
-      localFullscreen = false;
-    } else if (canNativeFullscreen) {
-      await target.requestFullscreen();
-      localFullscreen = false;
-    } else {
+    if (embedded) {
       localFullscreen = !localFullscreen;
-      if (embedded && window.parent !== window) {
+      if (window.parent !== window) {
         try {
           if (typeof window.parent.estrattoSetAppChromeHidden === "function") {
             window.parent.estrattoSetAppChromeHidden(localFullscreen);
+          } else {
+            document.body.classList.toggle("reader-fullscreen", localFullscreen);
           }
         } catch (e) {
           console.warn("Parent chrome toggle failed, falling back to local fullscreen:", e);
@@ -204,6 +198,19 @@
       } else {
         document.body.classList.toggle("reader-fullscreen", localFullscreen);
       }
+      updateFullscreenLabel();
+      return;
+    }
+
+    const target = viewerContainer;
+    const canNativeFullscreen = typeof target.requestFullscreen === "function" && typeof document.exitFullscreen === "function";
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else if (canNativeFullscreen) {
+      await target.requestFullscreen();
+    } else {
+      localFullscreen = !localFullscreen;
+      document.body.classList.toggle("reader-fullscreen", localFullscreen);
     }
     updateFullscreenLabel();
   }

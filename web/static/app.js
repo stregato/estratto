@@ -29,6 +29,7 @@
   const websiteLinkMessage = $("#website-link-message");
   const websiteLinkOpenBtn = $("#website-link-open-btn");
   const websiteLinkModalClose = $("#website-link-modal-close");
+  let websiteTitleLookupToken = 0;
   const themeToggle = $("#theme-toggle");
   const settingsToggle = $("#settings-toggle");
   const settingsDropdown = $("#settings-dropdown");
@@ -178,6 +179,7 @@
     websiteLinkMessage.textContent = "";
     websiteLinkInput.value = "";
     websiteLinkTitleInput.value = "";
+    websiteTitleLookupToken = 0;
     websiteLinkModal.style.display = "block";
     websiteLinkInput.focus();
   }
@@ -185,6 +187,40 @@
   function closeWebsiteModal() {
     if (!websiteLinkModal) return;
     websiteLinkModal.style.display = "none";
+  }
+
+  async function suggestWebsiteTitle() {
+    const rawUrl = websiteLinkInput?.value || "";
+    const url = normalizeWebsiteUrl(rawUrl);
+    if (!url) return;
+
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return;
+    }
+
+    const token = ++websiteTitleLookupToken;
+    const userEditedTitle = (websiteLinkTitleInput?.value || "").trim();
+    const fallbackTitle = websiteLabelFromUrl(parsed.toString());
+    if (!userEditedTitle) {
+      websiteLinkTitleInput.value = fallbackTitle;
+    }
+    websiteLinkMessage.textContent = "Fetching website title...";
+
+    try {
+      const response = await api(`/api/website_title?url=${encodeURIComponent(parsed.toString())}`);
+      if (token !== websiteTitleLookupToken) return;
+      const currentTitle = (websiteLinkTitleInput?.value || "").trim();
+      if (!currentTitle || currentTitle === fallbackTitle) {
+        websiteLinkTitleInput.value = response.title || fallbackTitle;
+      }
+      websiteLinkMessage.textContent = "";
+    } catch (e) {
+      if (token !== websiteTitleLookupToken) return;
+      websiteLinkMessage.textContent = "Could not fetch title automatically.";
+    }
   }
 
   function openWebsiteFromModal() {
@@ -222,6 +258,7 @@
       openWebsiteFromModal();
     }
   });
+  websiteLinkInput?.addEventListener("blur", suggestWebsiteTitle);
   websiteLinkTitleInput?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -320,11 +357,24 @@
   let activeAppTab = "catalog";
   let channelHistory = JSON.parse(localStorage.getItem("channelHistory") || "[]")
     .filter((value) => typeof value === "string" && value.trim() !== "");
+  let websiteLibrary = JSON.parse(localStorage.getItem("websiteLibrary") || "[]")
+    .filter((item) => item && typeof item.src === "string" && typeof item.filename === "string")
+    .map((item) => ({
+      messageId: String(item.messageId || buildWebsiteDocumentId(item.src)),
+      filename: String(item.filename),
+      kind: "website",
+      src: String(item.src),
+      message_date: item.message_date || "",
+    }));
 
   function saveOpenDocuments() {
     localStorage.setItem("openDocuments", JSON.stringify(openDocuments));
     if (activeDocumentId) localStorage.setItem("activeDocumentId", activeDocumentId);
     else localStorage.removeItem("activeDocumentId");
+  }
+
+  function saveWebsiteLibrary() {
+    localStorage.setItem("websiteLibrary", JSON.stringify(websiteLibrary));
   }
 
   function saveChannelHistory() {
@@ -372,6 +422,15 @@
 
   function truncateLabel(value, max = 28) {
     return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+  }
+
+  function filterWebsiteLibraryItems() {
+    const query = searchTerm.trim().toLowerCase();
+    return websiteLibrary.filter((item) => {
+      if (activeFilter) return false;
+      if (!query) return true;
+      return item.filename.toLowerCase().includes(query) || item.src.toLowerCase().includes(query);
+    });
   }
 
   function renderReaderTabs() {
@@ -542,8 +601,30 @@
     activateDocumentTab(id);
   }
 
-  function openWebsiteTab(url, title) {
+  function openWebsiteTab(url, title, { activate = false } = {}) {
     const id = buildWebsiteDocumentId(url);
+    const existingLibraryItem = websiteLibrary.find((item) => item.messageId === id);
+    if (!existingLibraryItem) {
+      websiteLibrary.unshift({
+        messageId: id,
+        filename: title,
+        kind: "website",
+        src: url,
+        message_date: new Date().toISOString(),
+      });
+    } else {
+      existingLibraryItem.filename = title;
+      existingLibraryItem.src = url;
+    }
+    saveWebsiteLibrary();
+
+    if (!activate) {
+      if (activeAppTab === "catalog" && !activeDocumentId) {
+        loadCatalog();
+      }
+      return;
+    }
+
     const existing = openDocuments.find((doc) => doc.messageId === id);
     if (!existing) {
       openDocuments.push({
@@ -552,16 +633,43 @@
         kind: "website",
         src: url,
       });
-      syncReaderPane();
-      return;
+    } else {
+      existing.filename = title;
+      existing.src = url;
     }
-    existing.filename = title;
-    existing.src = url;
     syncReaderPane();
+    activeDocumentId = id;
+    activateDocumentTab(id);
+  }
+
+  function renameWebsiteLibraryItem(messageId, oldFilename) {
+    const nextFilename = prompt("Enter new title:", oldFilename);
+    if (!nextFilename || nextFilename === oldFilename) return;
+    const item = websiteLibrary.find((entry) => entry.messageId === String(messageId));
+    if (!item) return;
+    item.filename = nextFilename;
+    saveWebsiteLibrary();
+    const openDoc = openDocuments.find((entry) => entry.messageId === String(messageId));
+    if (openDoc) {
+      openDoc.filename = nextFilename;
+      syncReaderPane();
+    }
+    loadCatalog();
+  }
+
+  function removeWebsiteLibraryItem(messageId) {
+    const id = String(messageId);
+    const item = websiteLibrary.find((entry) => entry.messageId === id);
+    if (!item) return;
+    if (!confirm(`Delete ${item.filename}?`)) return;
+    websiteLibrary = websiteLibrary.filter((entry) => entry.messageId !== id);
+    saveWebsiteLibrary();
+    closeDocumentTab(id);
+    loadCatalog();
   }
 
   function attachFilenameOpenHandlers(rootSelector) {
-    $$(`${rootSelector} .filename-link`).forEach((link) => {
+    $$(`${rootSelector} .filename-link:not(.website-link)`).forEach((link) => {
       link.addEventListener("click", async (e) => {
         e.preventDefault();
         await openDocumentTab(link.dataset.id, link.dataset.filename);
@@ -578,13 +686,22 @@
   function renderCatalogTable(items, total) {
     const body = $("#catalog-body");
     body.innerHTML = "";
-    for (const item of items) {
+    const websiteItems = page === 0 ? filterWebsiteLibraryItems() : [];
+    const combinedItems = [...websiteItems, ...items];
+    const combinedTotal = total + websiteItems.length;
+
+    for (const item of combinedItems) {
       const tr = document.createElement("tr");
       const filename = item.filename ?? "";
-      const fileExists = item.file_exists === true;
+      const isWebsite = item.kind === "website" || String(item.messageId || "").startsWith("website:");
+      const fileExists = isWebsite ? true : item.file_exists === true;
 
-      // Make filename clickable only if file actually exists on disk
-      const filenameDisplay = fileExists
+      const filenameDisplay = isWebsite
+        ? `<span class="filename-container">
+             <a href="#" class="filename-link website-link" data-id="${escapeHtml(item.messageId)}" data-src="${escapeHtml(item.src || "")}" data-filename="${escapeHtml(filename)}">${escapeHtml(filename)}</a>
+             <button class="rename-website-btn" data-id="${escapeHtml(item.messageId)}" data-filename="${escapeHtml(filename)}" title="Rename">✏️</button>
+           </span>`
+        : fileExists
         ? `<span class="filename-container">
              <a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${filename}</a>
              <button class="rename-btn" data-id="${item.message_id}" data-filename="${filename}" title="Rename">✏️</button>
@@ -594,21 +711,29 @@
       const isDownloaded = item.status && item.status !== "available";
       tr.innerHTML = `
         <td>${filenameDisplay}</td>
-        <td>${fmtSize(item.size)}</td>
+        <td>${isWebsite ? "" : fmtSize(item.size)}</td>
         <td>${(item.message_date ?? "").slice(0, 10)}</td>
-        <td><button class="tag-btn" data-id="${item.message_id}" data-filename="${filename}">🏷️</button></td>
+        <td>${isWebsite ? "" : `<button class="tag-btn" data-id="${item.message_id}" data-filename="${filename}">🏷️</button>`}</td>
         <td>
-          ${isDownloaded ? `<button data-id="${item.message_id}" data-path="${item.final_path || item.staging_path || ""}" class="trash-btn" title="Delete">🗑️</button>` : ""}
+          ${isWebsite
+            ? `<button data-id="${escapeHtml(item.messageId)}" class="trash-website-btn" title="Delete">🗑️</button>`
+            : isDownloaded ? `<button data-id="${item.message_id}" data-path="${item.final_path || item.staging_path || ""}" class="trash-btn" title="Delete">🗑️</button>` : ""}
         </td>
       `;
       body.appendChild(tr);
     }
 
-    const displayStart = Math.min(page * PAGE_SIZE + 1, total);
-    const displayEnd = Math.min(page * PAGE_SIZE + items.length, total);
-    $("#page-info").textContent = total > 0 ? `${displayStart}-${displayEnd} of ${total}` : "No items";
+    const displayStart = Math.min(page * PAGE_SIZE + 1, combinedTotal);
+    const displayEnd = Math.min(page * PAGE_SIZE + combinedItems.length, combinedTotal);
+    $("#page-info").textContent = combinedTotal > 0 ? `${displayStart}-${displayEnd} of ${combinedTotal}` : "No items";
 
     attachFilenameOpenHandlers("#catalog-body");
+    $$("#catalog-body .website-link").forEach((link) => {
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        openWebsiteTab(link.dataset.src, link.dataset.filename, { activate: true });
+      });
+    });
 
     // Tag button listeners
     $$("#catalog-body .tag-btn").forEach((btn) => {
@@ -645,6 +770,14 @@
       });
     });
 
+    $$("#catalog-body .rename-website-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        renameWebsiteLibraryItem(btn.dataset.id, btn.dataset.filename);
+      });
+    });
+
     $$("#catalog-body .trash-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const path = btn.dataset.path;
@@ -661,6 +794,12 @@
           alert(`Delete failed: ${e.message}`);
           btn.disabled = false;
         }
+      });
+    });
+
+    $$("#catalog-body .trash-website-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        removeWebsiteLibraryItem(btn.dataset.id);
       });
     });
   }
