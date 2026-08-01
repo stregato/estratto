@@ -85,6 +85,7 @@
   let totalPages = 1;
   let saveProgressTimer = null;
   let viewerKeyHandler = null;
+  let localFullscreen = false;
 
   function inferExtFromFilename(name) {
     if (!name || !name.includes(".")) return "";
@@ -136,7 +137,7 @@
   }
 
   function updateFullscreenLabel() {
-    fullscreenBtn.textContent = document.fullscreenElement ? "Exit Fullscreen" : "Fullscreen";
+    fullscreenBtn.textContent = (document.fullscreenElement || localFullscreen) ? "Exit Fullscreen" : "Fullscreen";
   }
 
   function showLoading(message) {
@@ -155,10 +156,16 @@
 
   async function toggleFullscreen() {
     const target = embedded ? document.documentElement : viewerContainer;
+    const canNativeFullscreen = typeof target.requestFullscreen === "function" && typeof document.exitFullscreen === "function";
     if (document.fullscreenElement) {
       await document.exitFullscreen();
-    } else {
+      localFullscreen = false;
+    } else if (canNativeFullscreen) {
       await target.requestFullscreen();
+      localFullscreen = false;
+    } else {
+      localFullscreen = !localFullscreen;
+      document.body.classList.toggle("reader-fullscreen", localFullscreen);
     }
     updateFullscreenLabel();
   }
