@@ -124,15 +124,28 @@
 
   function initWebsiteViewer() {
     const websiteViewer = document.getElementById("website-viewer");
+    let websiteScale = 1;
+
+    function applyWebsiteZoom(scale) {
+      websiteScale = Math.max(0.5, Math.min(2.5, scale));
+      websiteViewer.style.transform = `scale(${websiteScale})`;
+      websiteViewer.style.width = `${100 / websiteScale}%`;
+      websiteViewer.style.height = `${100 / websiteScale}%`;
+      updateZoomInfo(websiteScale);
+    }
+
     websiteViewer.style.display = "block";
     websiteViewer.src = websiteSrc;
     prevBtn.style.display = "none";
     nextBtn.style.display = "none";
     pageInfo.style.display = "none";
-    zoomOutBtn.style.display = "none";
-    zoomInBtn.style.display = "none";
-    zoomInfo.style.display = "none";
+    zoomOutBtn.style.display = "inline-block";
+    zoomInBtn.style.display = "inline-block";
+    zoomInfo.style.display = "inline";
     outlineToggleBtn.style.display = "none";
+    zoomOutBtn.onclick = () => applyWebsiteZoom(websiteScale - 0.1);
+    zoomInBtn.onclick = () => applyWebsiteZoom(websiteScale + 0.1);
+    applyWebsiteZoom(1);
     hideLoading();
     clearViewerKeyHandler();
     currentViewer = "website";

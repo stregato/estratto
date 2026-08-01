@@ -439,6 +439,13 @@ fieldset label input[type="checkbox"] { width: auto; margin-top: 0; }
 
 .catalog-filter-toolbar {
   margin-bottom: 0.75rem;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+.catalog-filter-toolbar input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .tag-section h3 {
