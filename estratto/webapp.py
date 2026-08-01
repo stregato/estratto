@@ -15,8 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -65,6 +65,35 @@ def _find_existing_file(cfg: Config, record: Optional[db_module.FileRecord], mes
         if candidate.exists() and candidate.is_file():
             return candidate
     return None
+
+
+def _parse_range_header(range_header: Optional[str], file_size: int) -> Optional[tuple[int, int]]:
+    if not range_header:
+        return None
+    if not range_header.startswith("bytes="):
+        return None
+
+    spec = range_header[len("bytes="):].strip()
+    if "," in spec:
+        raise HTTPException(416, "Multiple ranges are not supported")
+
+    start_text, _, end_text = spec.partition("-")
+    if not start_text and not end_text:
+        return None
+
+    if not start_text:
+        length = int(end_text)
+        if length <= 0:
+            raise HTTPException(416, "Invalid range")
+        start = max(0, file_size - length)
+        end = file_size - 1
+        return start, end
+
+    start = int(start_text)
+    end = int(end_text) if end_text else file_size - 1
+    if start < 0 or end < start or start >= file_size:
+        raise HTTPException(416, "Range not satisfiable")
+    return start, min(end, file_size - 1)
 
 
 def _next_local_upload_id(database: db_module.Database) -> int:
@@ -703,7 +732,7 @@ def create_app(config_path: str = None) -> FastAPI:
         response.headers["Access-Control-Max-Age"] = "86400"
         return response
 
-    def _build_file_response(message_id: int):
+    def _build_file_response(message_id: int, request: Request, head_only: bool = False):
         import mimetypes
 
         record = state.db.get_record(message_id)
@@ -745,26 +774,54 @@ def create_app(config_path: str = None) -> FastAPI:
             logger.error(f"[File Serving] Failed to read file: {e}")
             raise HTTPException(500, f"Cannot read file: {e}")
 
-        # Add CORS headers for PDF.js compatibility
-        from fastapi.responses import FileResponse as FR
-        response = FR(str(path_obj), media_type=mime_type)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Range"
-        response.headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges"
-        response.headers["Accept-Ranges"] = "bytes"
-        response.headers["Cache-Control"] = "private, max-age=3600"
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "private, max-age=3600",
+        }
 
-        logger.info(f"[File Serving] Response created successfully")
-        return response
+        byte_range = _parse_range_header(request.headers.get("range"), file_size)
+        if byte_range is None:
+            headers["Content-Length"] = str(file_size)
+            if head_only:
+                return Response(status_code=200, media_type=mime_type, headers=headers)
+
+            response = FileResponse(str(path_obj), media_type=mime_type, headers=headers)
+            logger.info("[File Serving] Full response created successfully")
+            return response
+
+        start, end = byte_range
+        chunk_size = end - start + 1
+        headers["Content-Length"] = str(chunk_size)
+        headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+
+        if head_only:
+            return Response(status_code=206, media_type=mime_type, headers=headers)
+
+        def iter_file():
+            with open(path_obj, "rb") as f:
+                f.seek(start)
+                remaining = chunk_size
+                while remaining > 0:
+                    data = f.read(min(65536, remaining))
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        logger.info("[File Serving] Range response created successfully: %s-%s", start, end)
+        return StreamingResponse(iter_file(), status_code=206, media_type=mime_type, headers=headers)
 
     @app.head("/api/file/{message_id}")
-    async def serve_file_head(message_id: int):
-        return _build_file_response(message_id)
+    async def serve_file_head(message_id: int, request: Request):
+        return _build_file_response(message_id, request, head_only=True)
 
     @app.get("/api/file/{message_id}")
-    async def serve_file(message_id: int):
-        return _build_file_response(message_id)
+    async def serve_file(message_id: int, request: Request):
+        return _build_file_response(message_id, request)
 
     # ---- Static frontend ------------------------------------------------------
 

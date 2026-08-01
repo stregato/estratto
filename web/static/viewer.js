@@ -126,6 +126,11 @@
     loadingOverlay.style.display = "none";
   }
 
+  function hideLoadingForPdf() {
+    loadingOverlay.style.display = "none";
+    loadingText.textContent = "";
+  }
+
   async function toggleFullscreen() {
     const target = embedded ? document.documentElement : viewerContainer;
     if (document.fullscreenElement) {
@@ -204,9 +209,11 @@
     let outlineOpen = false;
     let estimatedPageWidth = 0;
     let estimatedPageHeight = 0;
-    let renderQueue = Promise.resolve();
     let isRestoringPosition = false;
-    const RENDER_RADIUS = 2;
+    const INITIAL_RENDER_RADIUS = 0;
+    const ACTIVE_RENDER_RADIUS = 1;
+    let outlineLoaded = false;
+    let outlineLoading = false;
 
     pdfViewer.style.display = "flex";
     showLoading("Loading PDF... 0%");
@@ -252,6 +259,7 @@
         height: estimatedPageHeight,
         renderedScale: null,
         renderPromise: null,
+        renderToken: 0,
       };
       applyPageDimensions(pageNumber, estimatedPageWidth, estimatedPageHeight);
     }
@@ -283,13 +291,18 @@
       if (!entry) return;
       if (entry.renderedScale === currentScale) return;
       if (entry.renderPromise) {
-        await entry.renderPromise;
-        if (entry.renderedScale === currentScale) return;
+        if (entry.renderToken === version) {
+          await entry.renderPromise;
+          if (entry.renderedScale === currentScale) return;
+        } else {
+          return;
+        }
       }
 
+      entry.renderToken = version;
       entry.renderPromise = (async () => {
         const page = await pdfDoc.getPage(pageNumber);
-        if (version !== renderVersion) return;
+        if (version !== renderVersion || entry.renderToken !== version) return;
         const viewport = page.getViewport({ scale: currentScale });
         const outputScale = window.devicePixelRatio || 1;
         applyPageDimensions(pageNumber, viewport.width, viewport.height);
@@ -302,7 +315,7 @@
           viewport,
           transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null,
         }).promise;
-        if (version !== renderVersion) return;
+        if (version !== renderVersion || entry.renderToken !== version) return;
 
         const textContent = await page.getTextContent();
         entry.textLayer.replaceChildren();
@@ -312,20 +325,22 @@
           viewport,
           textDivs: [],
         }).promise;
-        if (version !== renderVersion) return;
+        if (version !== renderVersion || entry.renderToken !== version) return;
         entry.renderedScale = currentScale;
       })();
 
       try {
         await entry.renderPromise;
       } finally {
-        entry.renderPromise = null;
+        if (entry.renderToken === version) {
+          entry.renderPromise = null;
+        }
       }
     }
 
-    function trimRenderedPages(centerPage) {
-      const keepStart = clampPage(centerPage - RENDER_RADIUS);
-      const keepEnd = clampPage(centerPage + RENDER_RADIUS);
+    function trimRenderedPages(centerPage, radius) {
+      const keepStart = clampPage(centerPage - radius);
+      const keepEnd = clampPage(centerPage + radius);
       for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
         if (pageNumber < keepStart || pageNumber > keepEnd) {
           clearPageRender(pageNumber);
@@ -333,24 +348,27 @@
       }
     }
 
-    function queueVisibleRender(centerPage, { immediate = false } = {}) {
+    function queueVisibleRender(centerPage, { immediate = false, radius = ACTIVE_RENDER_RADIUS } = {}) {
       if (!pdfDoc) return Promise.resolve();
       const version = renderVersion;
-      const start = clampPage(centerPage - RENDER_RADIUS);
-      const end = clampPage(centerPage + RENDER_RADIUS);
+      const start = clampPage(centerPage - radius);
+      const end = clampPage(centerPage + radius);
       const run = async () => {
         for (let pageNumber = start; pageNumber <= end; pageNumber += 1) {
           await renderPage(pageNumber, version);
           if (version !== renderVersion) return;
         }
-        trimRenderedPages(centerPage);
+        trimRenderedPages(centerPage, radius);
       };
       if (immediate) {
-        renderQueue = run();
+        return run();
       } else {
-        renderQueue = renderQueue.then(run);
+        window.setTimeout(() => {
+          if (version !== renderVersion) return;
+          run().catch((e) => console.error("Deferred PDF render failed:", e));
+        }, 0);
       }
-      return renderQueue;
+      return Promise.resolve();
     }
 
     function getCurrentPdfPosition() {
@@ -386,7 +404,7 @@
       updatePageInfo();
       suppressScrollSave = true;
       isRestoringPosition = true;
-      await queueVisibleRender(currentPage, { immediate: true });
+      await queueVisibleRender(currentPage, { immediate: true, radius: INITIAL_RENDER_RADIUS });
       if (version !== renderVersion) return;
       requestAnimationFrame(() => {
         const anchor = getPageAnchor(currentPage);
@@ -401,6 +419,50 @@
           isRestoringPosition = false;
           suppressScrollSave = false;
         }, 150);
+      });
+    }
+
+    function updateEstimatedPageSize(scaleRatio) {
+      estimatedPageWidth = Math.max(1, Math.floor(estimatedPageWidth * scaleRatio));
+      estimatedPageHeight = Math.max(1, Math.floor(estimatedPageHeight * scaleRatio));
+    }
+
+    function resizePageShells(scaleRatio) {
+      for (const entry of pageEntries) {
+        if (!entry) continue;
+        applyPageDimensions(
+          Number(entry.wrapper.dataset.page),
+          Math.max(1, entry.width * scaleRatio),
+          Math.max(1, entry.height * scaleRatio),
+        );
+        entry.renderedScale = null;
+      }
+    }
+
+    function applyPdfZoom(nextScale) {
+      const previousScale = currentScale;
+      if (nextScale === previousScale) return;
+      const position = getCurrentPdfPosition();
+      const anchor = getPageAnchor(position.page);
+      const anchorOffset = anchor ? container.scrollTop - anchor.offsetTop : 0;
+
+      currentScale = nextScale;
+      renderVersion += 1;
+      updateZoomInfo(currentScale);
+
+      const scaleRatio = currentScale / previousScale;
+      updateEstimatedPageSize(scaleRatio);
+      resizePageShells(scaleRatio);
+
+      requestAnimationFrame(() => {
+        const nextAnchor = getPageAnchor(position.page);
+        if (nextAnchor) {
+          container.scrollTop = nextAnchor.offsetTop + anchorOffset * scaleRatio;
+        }
+        queueVisibleRender(position.page, { immediate: true, radius: 0 }).catch((e) => {
+          console.error("Current PDF page rerender failed:", e);
+        });
+        queueVisibleRender(position.page, { radius: ACTIVE_RENDER_RADIUS });
       });
     }
 
@@ -467,18 +529,26 @@
     }
 
     async function loadOutline() {
-      const outline = await pdfDoc.getOutline();
-      if (!outline || !outline.length) {
-        documentOutline.classList.remove("open");
-        documentOutline.innerHTML = "";
-        outlineToggleBtn.style.display = "none";
-        return;
-      }
+      if (outlineLoaded || outlineLoading) return;
+      outlineLoading = true;
+      try {
+        const outline = await pdfDoc.getOutline();
+        if (!outline || !outline.length) {
+          documentOutline.classList.remove("open");
+          documentOutline.innerHTML = "";
+          outlineToggleBtn.style.display = "none";
+          outlineLoaded = true;
+          return;
+        }
 
-      documentOutline.innerHTML = "";
-      documentOutline.appendChild(await buildOutlineMarkup(outline));
-      outlineToggleBtn.style.display = "inline-block";
-      outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
+        documentOutline.innerHTML = "";
+        documentOutline.appendChild(await buildOutlineMarkup(outline));
+        outlineToggleBtn.style.display = "inline-block";
+        outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
+        outlineLoaded = true;
+      } finally {
+        outlineLoading = false;
+      }
     }
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
@@ -490,24 +560,30 @@
       rangeChunkSize: 262144,
     });
     loadingTask.onProgress = (progressData) => {
+      if (currentViewer === "pdf") return;
       if (!progressData?.total) {
         showLoading("Loading PDF...");
         return;
       }
-      const percent = Math.max(0, Math.min(100, Math.round((progressData.loaded / progressData.total) * 100)));
+      const percent = Math.max(0, Math.min(95, Math.round((progressData.loaded / progressData.total) * 100)));
       showLoading(`Loading PDF... ${percent}%`);
     };
     pdfDoc = await loadingTask.promise;
+    hideLoadingForPdf();
     totalPages = pdfDoc.numPages || 1;
     if (currentPage > totalPages) currentPage = totalPages;
     const firstPage = await pdfDoc.getPage(1);
     const initialViewport = firstPage.getViewport({ scale: currentScale });
     estimatedPageWidth = Math.max(1, Math.floor(initialViewport.width));
     estimatedPageHeight = Math.max(1, Math.floor(initialViewport.height));
-    await loadOutline();
-    showLoading("Rendering first pages...");
+    outlineToggleBtn.style.display = "inline-block";
+    outlineToggleBtn.textContent = "Contents";
     await renderAllPages(currentPage, savedScrollRatio);
-    hideLoading();
+    hideLoadingForPdf();
+
+    window.setTimeout(() => {
+      queueVisibleRender(currentPage, { radius: ACTIVE_RENDER_RADIUS });
+    }, 0);
 
     prevBtn.onclick = async () => {
       if (currentPage <= 1) return;
@@ -521,19 +597,28 @@
 
     zoomOutBtn.onclick = async () => {
       if (currentScale <= 0.7) return;
-      const position = getCurrentPdfPosition();
-      currentScale = Math.max(0.7, currentScale - 0.15);
-      await renderAllPages(position.page, position.ratio);
+      applyPdfZoom(Math.max(0.7, currentScale - 0.15));
     };
 
     zoomInBtn.onclick = async () => {
       if (currentScale >= 2.5) return;
-      const position = getCurrentPdfPosition();
-      currentScale = Math.min(2.5, currentScale + 0.15);
-      await renderAllPages(position.page, position.ratio);
+      applyPdfZoom(Math.min(2.5, currentScale + 0.15));
     };
 
-    outlineToggleBtn.onclick = () => {
+    outlineToggleBtn.onclick = async () => {
+      if (!outlineLoaded) {
+        outlineToggleBtn.disabled = true;
+        outlineToggleBtn.textContent = "Loading Contents...";
+        try {
+          await loadOutline();
+        } finally {
+          outlineToggleBtn.disabled = false;
+          if (!outlineLoaded) {
+            outlineToggleBtn.textContent = "Contents";
+            return;
+          }
+        }
+      }
       outlineOpen = !outlineOpen;
       documentOutline.classList.toggle("open", outlineOpen);
       outlineToggleBtn.textContent = outlineOpen ? "Hide Contents" : "Contents";
@@ -543,22 +628,14 @@
       syncCurrentPageFromScroll();
     });
 
-    if (!isRestoringPosition) {
-      queueVisibleRender(currentPage);
-    }
-
     container.addEventListener("wheel", async (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
-      const position = getCurrentPdfPosition();
       if (e.deltaY < 0 && currentScale < 2.5) {
-        currentScale = Math.min(2.5, currentScale + 0.1);
+        applyPdfZoom(Math.min(2.5, currentScale + 0.1));
       } else if (e.deltaY > 0 && currentScale > 0.7) {
-        currentScale = Math.max(0.7, currentScale - 0.1);
-      } else {
-        return;
+        applyPdfZoom(Math.max(0.7, currentScale - 0.1));
       }
-      await renderAllPages(position.page, position.ratio);
     }, { passive: false });
 
     clearViewerKeyHandler();
