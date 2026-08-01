@@ -716,8 +716,14 @@ def create_app(config_path: str = None) -> FastAPI:
     @app.get("/api/file_status/{message_id}")
     async def file_status(message_id: int):
         record = state.db.get_record(message_id)
+        catalog_entry = state.db.get_catalog_entry(message_id)
         path_obj = _find_existing_file(state.cfg, record, message_id)
-        return {"exists": path_obj is not None}
+        actual_ext = path_obj.suffix.lower() if path_obj else None
+        return {
+            "exists": path_obj is not None,
+            "filename": catalog_entry.get("filename") if catalog_entry else None,
+            "ext": actual_ext or (catalog_entry.get("ext") if catalog_entry else None),
+        }
 
     # ---- File serving ---------------------------------------------------------
 

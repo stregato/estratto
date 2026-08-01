@@ -296,6 +296,7 @@
     .map((doc) => ({
       messageId: String(doc.messageId),
       filename: String(doc.filename),
+      ext: typeof doc.ext === "string" ? doc.ext : "",
       kind: doc.kind === "website" ? "website" : "file",
       src: doc.kind === "website" && typeof doc.src === "string" ? doc.src : null,
     }))
@@ -409,7 +410,7 @@
       const iframe = view.querySelector(".reader-frame");
       const wantedSrc = doc.kind === "website"
         ? doc.src
-        : `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&embedded=1`;
+        : `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&ext=${encodeURIComponent(doc.ext || "")}&embedded=1`;
       if (doc.messageId === activeDocumentId && iframe && iframe.getAttribute("src") !== wantedSrc) {
         iframe.setAttribute("src", wantedSrc);
       }
@@ -511,7 +512,15 @@
     const id = String(messageId);
     const existing = openDocuments.find((doc) => doc.messageId === id);
     if (!existing) {
-      openDocuments.push({ messageId: id, filename });
+      openDocuments.push({
+        messageId: id,
+        filename: status.filename || filename,
+        ext: status.ext || "",
+      });
+      syncReaderPane();
+    } else {
+      existing.filename = status.filename || filename;
+      existing.ext = status.ext || existing.ext || "";
       syncReaderPane();
     }
     activeDocumentId = id;

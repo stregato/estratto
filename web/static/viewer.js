@@ -4,6 +4,7 @@
   const params = new URLSearchParams(window.location.search);
   const messageId = params.get("id");
   const filename = params.get("filename") || "Document";
+  const extParam = (params.get("ext") || "").toLowerCase();
   const embedded = params.get("embedded") === "1";
 
   if (!messageId) {
@@ -85,8 +86,29 @@
   let saveProgressTimer = null;
   let viewerKeyHandler = null;
 
-  // Detect file type from extension
-  const ext = filename.split(".").pop().toLowerCase();
+  function inferExtFromFilename(name) {
+    if (!name || !name.includes(".")) return "";
+    return name.split(".").pop().toLowerCase();
+  }
+
+  async function getFileInfo() {
+    try {
+      return await api(`/api/file_status/${messageId}`);
+    } catch (e) {
+      console.warn("Failed to load file metadata:", e);
+      return { exists: true, filename, ext: extParam || inferExtFromFilename(filename) };
+    }
+  }
+
+  function reportViewerError(message) {
+    hideLoading();
+    alert(message);
+    if (embedded) {
+      closeViewer();
+    } else {
+      window.location.href = "/";
+    }
+  }
 
   async function api(path, opts = {}) {
     const res = await fetch(path, {
@@ -1028,39 +1050,44 @@
     }
   }
 
-  // Initialize appropriate viewer based on file type
-  if (ext === "pdf") {
-    testFileAccess()
-      .then(() => initPdfViewer())
-      .catch((e) => {
-        console.error('[PDF Viewer] Error:', e);
-        hideLoading();
-        alert(`Failed to load PDF: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${filename}`);
-        window.location.href = "/";
-      });
-  } else if (ext === "epub") {
-    testFileAccess()
-      .then(() => initEpubViewer())
-      .catch((e) => {
-        console.error('EPUB viewer error:', e);
-        hideLoading();
-        alert(`Failed to load EPUB: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${filename}`);
-        window.location.href = "/";
-      });
-  } else if (ext === "cbz" || ext === "cbr") {
-    testFileAccess()
-      .then(() => initComicViewer())
-      .catch((e) => {
-        console.error('Comic viewer error:', e);
-        hideLoading();
-        alert(`Failed to load comic: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${filename}`);
-        window.location.href = "/";
-      });
-  } else {
-    hideLoading();
-    alert(`Unsupported file format: ${ext}`);
-    window.location.href = "/";
-  }
+  (async () => {
+    const fileInfo = await getFileInfo();
+    const resolvedFilename = fileInfo?.filename || filename;
+    const resolvedExt = String(fileInfo?.ext || extParam || inferExtFromFilename(resolvedFilename)).replace(/^\./, "").toLowerCase();
+    document.getElementById("doc-title").textContent = resolvedFilename;
+
+    if (resolvedExt === "pdf") {
+      testFileAccess()
+        .then(() => initPdfViewer())
+        .catch((e) => {
+          console.error("[PDF Viewer] Error:", e);
+          reportViewerError(`Failed to load PDF: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${resolvedFilename}`);
+        });
+      return;
+    }
+
+    if (resolvedExt === "epub") {
+      testFileAccess()
+        .then(() => initEpubViewer())
+        .catch((e) => {
+          console.error("EPUB viewer error:", e);
+          reportViewerError(`Failed to load EPUB: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${resolvedFilename}`);
+        });
+      return;
+    }
+
+    if (resolvedExt === "cbz" || resolvedExt === "cbr") {
+      testFileAccess()
+        .then(() => initComicViewer())
+        .catch((e) => {
+          console.error("Comic viewer error:", e);
+          reportViewerError(`Failed to load comic: ${e.message}\n\nMessage ID: ${messageId}\nFilename: ${resolvedFilename}`);
+        });
+      return;
+    }
+
+    reportViewerError(`Unsupported file format: ${resolvedFilename}`);
+  })();
 
   fullscreenBtn.addEventListener("click", async () => {
     try {

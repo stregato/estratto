@@ -212,6 +212,21 @@ class Database:
             return None
         return FileRecord(**{k: row[k] for k in row.keys() if k in FileRecord.__dataclass_fields__})
 
+    def get_catalog_entry(self, message_id: int) -> Optional[dict]:
+        source_expr = self._catalog_source_expr()
+        with self._lock:
+            cur = self._conn.execute(
+                f"""
+                SELECT c.message_id, c.filename, c.caption, c.size, c.message_date, c.ext,
+                       {source_expr} AS source
+                FROM catalog c
+                WHERE c.message_id = ?
+                """,
+                (message_id,),
+            )
+            row = cur.fetchone()
+        return dict(row) if row else None
+
     def files_pending_sort(self) -> list[FileRecord]:
         with self._lock:
             cur = self._conn.execute("SELECT * FROM files WHERE status = ?", (STATUS_DOWNLOADED,))
