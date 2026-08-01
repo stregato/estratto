@@ -291,6 +291,14 @@
   let arxivCategory = "";
   let arxivTotal = 0;
   let telegramLoginStage = "phone";
+  const READER_STATE_VERSION = "3";
+  const VIEWER_EMBED_VERSION = "24";
+  const savedReaderStateVersion = localStorage.getItem("readerStateVersion");
+  if (savedReaderStateVersion !== READER_STATE_VERSION) {
+    localStorage.removeItem("openDocuments");
+    localStorage.removeItem("activeDocumentId");
+    localStorage.setItem("readerStateVersion", READER_STATE_VERSION);
+  }
   let openDocuments = JSON.parse(localStorage.getItem("openDocuments") || "[]")
     .filter((doc) => doc && doc.messageId && doc.filename)
     .map((doc) => ({
@@ -410,7 +418,7 @@
       const iframe = view.querySelector(".reader-frame");
       const wantedSrc = doc.kind === "website"
         ? doc.src
-        : `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&ext=${encodeURIComponent(doc.ext || "")}&embedded=1`;
+        : `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&ext=${encodeURIComponent(doc.ext || "")}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}`;
       if (doc.messageId === activeDocumentId && iframe && iframe.getAttribute("src") !== wantedSrc) {
         iframe.setAttribute("src", wantedSrc);
       }
