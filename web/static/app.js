@@ -679,8 +679,13 @@
 
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin) return;
-    if (event.data?.type !== "estratto-close-document") return;
-    closeDocumentTab(event.data.messageId);
+    if (event.data?.type === "estratto-close-document") {
+      closeDocumentTab(event.data.messageId);
+      return;
+    }
+    if (event.data?.type === "estratto-set-app-chrome-hidden") {
+      setAppChromeHidden(Boolean(event.data.hidden));
+    }
   });
 
   function renderCatalogTable(items, total) {
@@ -1251,13 +1256,14 @@
       const tags = await api("/api/tags/confirmed");
       const container = $("#tag-filters");
       const tabList = $("#tag-tab-list");
-
-      container.style.display = "block";
       tabList.innerHTML = "";
 
       if (tags.length === 0) {
+        container.style.display = "none";
         return;
       }
+
+      container.style.display = "block";
 
       for (const tag of tags) {
         const btn = document.createElement("button");

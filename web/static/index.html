@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Estratto</title>
-  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
   <header>
@@ -46,11 +46,12 @@
           <button id="delete-tab-btn" class="secondary" style="display:none;">Delete this tab</button>
         </div>
 
+        <div class="toolbar catalog-filter-toolbar">
+          <button id="catalog-reload-btn" class="secondary icon-btn" type="button" title="Reload books">↻</button>
+          <input id="search-input" type="search" placeholder="Search filename or caption...">
+        </div>
+
         <div id="tag-filters" class="tag-section" style="display:none">
-          <div class="toolbar catalog-filter-toolbar">
-            <button id="catalog-reload-btn" class="secondary icon-btn" type="button" title="Reload books">↻</button>
-            <input id="search-input" type="search" placeholder="Search filename or caption...">
-          </div>
           <div class="tag-tabs">
             <div id="tag-tab-list"></div>
           </div>
@@ -317,6 +318,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=10"></script>
 </body>
 </html>

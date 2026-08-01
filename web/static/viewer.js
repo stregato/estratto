@@ -197,19 +197,16 @@
   async function toggleFullscreen() {
     if (embedded) {
       localFullscreen = !localFullscreen;
+      document.body.classList.toggle("reader-fullscreen", localFullscreen);
       if (window.parent !== window) {
         try {
           if (typeof window.parent.estrattoSetAppChromeHidden === "function") {
             window.parent.estrattoSetAppChromeHidden(localFullscreen);
-          } else {
-            document.body.classList.toggle("reader-fullscreen", localFullscreen);
           }
+          window.parent.postMessage({ type: "estratto-set-app-chrome-hidden", hidden: localFullscreen }, window.location.origin);
         } catch (e) {
-          console.warn("Parent chrome toggle failed, falling back to local fullscreen:", e);
-          document.body.classList.toggle("reader-fullscreen", localFullscreen);
+          console.warn("Parent chrome toggle failed:", e);
         }
-      } else {
-        document.body.classList.toggle("reader-fullscreen", localFullscreen);
       }
       updateFullscreenLabel();
       return;
