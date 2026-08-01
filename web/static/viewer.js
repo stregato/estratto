@@ -3,8 +3,10 @@
 
   const params = new URLSearchParams(window.location.search);
   const messageId = params.get("id");
+  const viewerKind = params.get("kind") || "file";
   const filename = params.get("filename") || "Document";
   const extParam = (params.get("ext") || "").toLowerCase();
+  const websiteSrc = params.get("src") || "";
   const embedded = params.get("embedded") === "1";
 
   if (!messageId) {
@@ -104,11 +106,36 @@
   function reportViewerError(message) {
     hideLoading();
     alert(message);
+    if (embedded && window.parent !== window) {
+      try {
+        if (typeof window.parent.estrattoSetAppChromeHidden === "function") {
+          window.parent.estrattoSetAppChromeHidden(false);
+        }
+      } catch (e) {
+        console.warn("Could not restore parent chrome after viewer error:", e);
+      }
+    }
     if (embedded) {
       closeViewer();
     } else {
       window.location.href = "/";
     }
+  }
+
+  function initWebsiteViewer() {
+    const websiteViewer = document.getElementById("website-viewer");
+    websiteViewer.style.display = "block";
+    websiteViewer.src = websiteSrc;
+    prevBtn.style.display = "none";
+    nextBtn.style.display = "none";
+    pageInfo.style.display = "none";
+    zoomOutBtn.style.display = "none";
+    zoomInBtn.style.display = "none";
+    zoomInfo.style.display = "none";
+    outlineToggleBtn.style.display = "none";
+    hideLoading();
+    clearViewerKeyHandler();
+    currentViewer = "website";
   }
 
   async function api(path, opts = {}) {
@@ -165,12 +192,32 @@
       localFullscreen = false;
     } else {
       localFullscreen = !localFullscreen;
-      document.body.classList.toggle("reader-fullscreen", localFullscreen);
+      if (embedded && window.parent !== window) {
+        try {
+          if (typeof window.parent.estrattoSetAppChromeHidden === "function") {
+            window.parent.estrattoSetAppChromeHidden(localFullscreen);
+          }
+        } catch (e) {
+          console.warn("Parent chrome toggle failed, falling back to local fullscreen:", e);
+          document.body.classList.toggle("reader-fullscreen", localFullscreen);
+        }
+      } else {
+        document.body.classList.toggle("reader-fullscreen", localFullscreen);
+      }
     }
     updateFullscreenLabel();
   }
 
   function closeViewer() {
+    if (embedded && window.parent !== window) {
+      try {
+        if (typeof window.parent.estrattoSetAppChromeHidden === "function") {
+          window.parent.estrattoSetAppChromeHidden(false);
+        }
+      } catch (e) {
+        console.warn("Could not restore parent chrome on close:", e);
+      }
+    }
     if (embedded && window.parent !== window) {
       try {
         if (typeof window.parent.estrattoCloseDocument === "function") {
@@ -1058,6 +1105,15 @@
   }
 
   (async () => {
+    if (viewerKind === "website") {
+      if (!websiteSrc) {
+        reportViewerError("Missing website URL");
+        return;
+      }
+      initWebsiteViewer();
+      return;
+    }
+
     const fileInfo = await getFileInfo();
     const resolvedFilename = fileInfo?.filename || filename;
     const resolvedExt = String(fileInfo?.ext || extParam || inferExtFromFilename(resolvedFilename)).replace(/^\./, "").toLowerCase();

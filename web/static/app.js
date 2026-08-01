@@ -73,6 +73,13 @@
     }
   }
 
+  function setAppChromeHidden(hidden) {
+    document.body.classList.toggle("app-chrome-hidden", hidden);
+    syncHeaderOffset();
+  }
+
+  window.estrattoSetAppChromeHidden = setAppChromeHidden;
+
   sourceToggle.addEventListener("click", (e) => {
     e.stopPropagation();
     const isVisible = sourceDropdown.style.display === "block";
@@ -417,7 +424,7 @@
       }
       const iframe = view.querySelector(".reader-frame");
       const wantedSrc = doc.kind === "website"
-        ? doc.src
+        ? `/viewer?kind=website&id=${encodeURIComponent(doc.messageId)}&filename=${encodeURIComponent(doc.filename)}&src=${encodeURIComponent(doc.src || "")}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}`
         : `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&ext=${encodeURIComponent(doc.ext || "")}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}`;
       if (doc.messageId === activeDocumentId && iframe && iframe.getAttribute("src") !== wantedSrc) {
         iframe.setAttribute("src", wantedSrc);
@@ -546,9 +553,11 @@
         src: url,
       });
       syncReaderPane();
+      return;
     }
-    activeDocumentId = id;
-    activateDocumentTab(id);
+    existing.filename = title;
+    existing.src = url;
+    syncReaderPane();
   }
 
   function attachFilenameOpenHandlers(rootSelector) {
@@ -679,6 +688,18 @@
     searchTerm = e.target.value;
     page = 0;
     loadCatalog();
+  });
+
+  $("#catalog-reload-btn")?.addEventListener("click", async () => {
+    const btn = $("#catalog-reload-btn");
+    if (!btn) return;
+    btn.disabled = true;
+    try {
+      await loadCatalog();
+      await loadTagFilters();
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   $("#prev-page").addEventListener("click", () => { if (page > 0) { page--; loadCatalog(); } });

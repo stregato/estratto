@@ -41,6 +41,10 @@ body {
   color: var(--text);
 }
 
+body.app-chrome-hidden {
+  --app-header-height: 0px;
+}
+
 header {
   position: fixed;
   top: 0;
@@ -54,6 +58,10 @@ header {
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   z-index: 100;
+}
+
+body.app-chrome-hidden header {
+  display: none;
 }
 
 header h1 {
@@ -114,6 +122,10 @@ main {
   padding: calc(var(--app-header-height) + 1.25rem) 1.25rem 1.25rem;
   max-width: 1600px;
   margin: 0 auto;
+}
+
+body.app-chrome-hidden main {
+  padding-top: 0;
 }
 
 .content-pane {
@@ -201,6 +213,10 @@ main {
   overflow: hidden;
 }
 
+body.app-chrome-hidden .reader-views {
+  min-height: 100vh;
+}
+
 .reader-view {
   display: none;
 }
@@ -214,6 +230,10 @@ main {
   height: calc(100vh - 112px);
   border: none;
   background: var(--bg);
+}
+
+body.app-chrome-hidden .reader-frame {
+  height: 100vh;
 }
 
 .tab { display: none; }
