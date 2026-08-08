@@ -18,6 +18,7 @@
   document.getElementById("doc-title").textContent = filename;
   const viewerToolbar = document.getElementById("viewer-toolbar");
   const viewerContainer = document.getElementById("viewer-container");
+  const documentScroll = document.getElementById("document-scroll");
   const backBtn = document.getElementById("back-btn");
   const fullscreenBtn = document.getElementById("viewer-fullscreen-btn");
   const closeBtn = document.getElementById("viewer-close-btn");
@@ -263,7 +264,7 @@
           body: JSON.stringify({
             current_page: currentPage,
             total_pages: totalPages,
-            scroll_position: document.getElementById("viewer-container").scrollTop,
+            scroll_position: documentScroll.scrollTop,
           }),
         });
       } catch (e) {
@@ -295,7 +296,7 @@
     console.log(`[PDF Viewer] Initializing stacked PDF.js viewer for message_id=${messageId}, filename=${filename}`);
 
     const pdfViewer = document.getElementById("pdf-viewer");
-    const container = document.getElementById("viewer-container");
+    const container = documentScroll;
     const progress = await api(`/api/progress/${messageId}`);
     let pdfDoc = null;
     let currentScale = 1.2;
@@ -758,7 +759,6 @@
   async function initEpubViewer() {
     const container = document.getElementById("epub-viewer");
     const viewerContent = document.getElementById("viewer-content");
-    const viewerContainer = document.getElementById("viewer-container");
     const stage = document.getElementById("pdf-stage");
     viewerContainer.classList.add("epub-mode");
     container.style.display = "block";
@@ -766,7 +766,7 @@
     showLoading("Loading EPUB...");
 
     function syncEpubViewport() {
-      const height = Math.max(viewerContainer.clientHeight, window.innerHeight - viewerToolbar.offsetHeight);
+      const height = Math.max(documentScroll.clientHeight, window.innerHeight - viewerToolbar.offsetHeight);
       stage.style.minHeight = `${height}px`;
       container.style.minHeight = `${height}px`;
       stage.style.height = "auto";
@@ -953,15 +953,15 @@
     };
 
     prevBtn.onclick = () => {
-      viewerContainer.scrollBy({ top: -Math.max(240, viewerContainer.clientHeight * 0.9), behavior: "smooth" });
+      documentScroll.scrollBy({ top: -Math.max(240, documentScroll.clientHeight * 0.9), behavior: "smooth" });
     };
     nextBtn.onclick = () => {
-      viewerContainer.scrollBy({ top: Math.max(240, viewerContainer.clientHeight * 0.9), behavior: "smooth" });
+      documentScroll.scrollBy({ top: Math.max(240, documentScroll.clientHeight * 0.9), behavior: "smooth" });
     };
     zoomOutBtn.onclick = async () => setFontScale(fontScale - 0.1);
     zoomInBtn.onclick = async () => setFontScale(fontScale + 0.1);
 
-    viewerContainer.addEventListener("wheel", (e) => {
+    documentScroll.addEventListener("wheel", (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
       setFontScale(fontScale + (e.deltaY < 0 ? 0.05 : -0.05));
@@ -975,21 +975,21 @@
 
     window.addEventListener("resize", () => {
       syncEpubViewport();
-      rendition.resize(viewerContainer.clientWidth, viewerContainer.clientHeight);
+      rendition.resize(documentScroll.clientWidth, documentScroll.clientHeight);
     });
 
     document.addEventListener("fullscreenchange", () => {
       syncEpubViewport();
-      rendition.resize(viewerContainer.clientWidth, viewerContainer.clientHeight);
+      rendition.resize(documentScroll.clientWidth, documentScroll.clientHeight);
     });
 
     // Keyboard navigation
     clearViewerKeyHandler();
     viewerKeyHandler = (e) => {
       if (e.key === "ArrowLeft") {
-        viewerContainer.scrollBy({ top: -Math.max(160, viewerContainer.clientHeight * 0.75), behavior: "smooth" });
+        documentScroll.scrollBy({ top: -Math.max(160, documentScroll.clientHeight * 0.75), behavior: "smooth" });
       } else if (e.key === "ArrowRight") {
-        viewerContainer.scrollBy({ top: Math.max(160, viewerContainer.clientHeight * 0.75), behavior: "smooth" });
+        documentScroll.scrollBy({ top: Math.max(160, documentScroll.clientHeight * 0.75), behavior: "smooth" });
       }
     };
     document.addEventListener("keydown", viewerKeyHandler);
