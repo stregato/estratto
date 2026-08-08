@@ -336,7 +336,7 @@
   let arxivTotal = 0;
   let telegramLoginStage = "phone";
   const READER_STATE_VERSION = "3";
-  const VIEWER_EMBED_VERSION = "24";
+  const VIEWER_EMBED_VERSION = "31";
   const savedReaderStateVersion = localStorage.getItem("readerStateVersion");
   if (savedReaderStateVersion !== READER_STATE_VERSION) {
     localStorage.removeItem("openDocuments");
@@ -717,7 +717,7 @@
            </span>`
         : fileExists
         ? `<span class="filename-container">
-             <a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${filename}</a>
+             <a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${filename}</a>
              <button class="rename-btn" data-id="${item.message_id}" data-filename="${filename}" title="Rename">✏️</button>
            </span>`
         : filename;
@@ -897,7 +897,7 @@
       // Make filename clickable only if file actually exists on disk
       const filenameDisplay = fileExists
         ? `<span class="filename-container">
-             <a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${filename}</a>
+             <a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${filename}</a>
              <button class="rename-btn" data-id="${item.message_id}" data-filename="${filename}" title="Rename">✏️</button>
            </span>`
         : filename;
@@ -1045,7 +1045,7 @@
       const filename = item.filename ?? "";
       const fileExists = item.file_exists === true;
       const filenameDisplay = fileExists
-        ? `<a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${escapeHtml(filename)}</a>`
+        ? `<a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${escapeHtml(filename)}</a>`
         : escapeHtml(filename);
 
       tr.innerHTML = `
