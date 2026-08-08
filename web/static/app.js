@@ -555,31 +555,40 @@
 
   window.estrattoCloseDocument = closeDocumentTab;
 
-  async function removeMissingDocument(messageId) {
-    try {
-      const res = await fetch(`/api/delete/${messageId}`, { method: "POST" });
-      if (!res.ok && res.status !== 404) {
-        const body = await res.json().catch(() => ({}));
-        let detail = body.detail;
-        if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
-        throw new Error(detail || `${res.status} ${res.statusText}`);
-      }
-    } catch (e) {
-      console.error("Failed to remove missing document:", e);
-    }
+  async function handleMissingDocument(messageId, filename) {
     closeDocumentTab(messageId);
+    const shouldRemove = confirm(
+      `File not accessible${filename ? `: ${filename}` : ""}.\n\nRemove this entry from Estratto?`
+    );
+    if (shouldRemove) {
+      try {
+        const res = await fetch(`/api/delete/${messageId}`, { method: "POST" });
+        if (!res.ok && res.status !== 404) {
+          const body = await res.json().catch(() => ({}));
+          let detail = body.detail;
+          if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+          throw new Error(detail || `${res.status} ${res.statusText}`);
+        }
+      } catch (e) {
+        console.error("Failed to remove missing document:", e);
+        alert(`Could not remove missing entry: ${e.message}`);
+      }
+    }
     await Promise.allSettled([
       loadCatalog(),
       loadDownloadCatalog(),
       loadTagFilters(),
       loadDownloadTagFilters(),
     ]);
+    if (!shouldRemove) {
+      alert("The entry was kept.");
+    }
   }
 
   async function openDocumentTab(messageId, filename) {
     const status = await api(`/api/file_status/${messageId}`);
     if (!status.exists) {
-      await removeMissingDocument(messageId);
+      await handleMissingDocument(messageId, status.filename || filename);
       return;
     }
 

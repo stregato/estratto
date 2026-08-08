@@ -80,6 +80,9 @@
     backBtn.style.display = "none";
     viewerToolbar.style.height = "42px";
     viewerContainer.style.top = "42px";
+    document.documentElement.style.setProperty("--viewer-toolbar-height", "42px");
+  } else {
+    document.documentElement.style.setProperty("--viewer-toolbar-height", "50px");
   }
 
   let currentViewer = null;

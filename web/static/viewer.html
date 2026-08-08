@@ -6,6 +6,10 @@
   <title>Viewer - Estratto</title>
   <link rel="stylesheet" href="/static/style.css?v=3">
   <style>
+    :root {
+      --viewer-toolbar-height: 50px;
+    }
+
     body {
       margin: 0;
       overflow: hidden;
@@ -13,7 +17,7 @@
 
     #viewer-container {
       position: fixed;
-      top: 50px;
+      top: var(--viewer-toolbar-height);
       left: 0;
       right: 0;
       bottom: 0;
@@ -71,15 +75,21 @@
 
     #viewer-content {
       display: flex;
+      align-items: flex-start;
       height: 100%;
       min-height: 100%;
       min-width: 100%;
-      width: max-content;
+      width: 100%;
     }
 
     #document-outline {
       width: 280px;
       flex: 0 0 280px;
+      align-self: flex-start;
+      position: sticky;
+      top: 0;
+      height: calc(100vh - var(--viewer-toolbar-height));
+      max-height: calc(100vh - var(--viewer-toolbar-height));
       border-right: 1px solid var(--border);
       background: var(--panel);
       padding: 12px;
@@ -89,6 +99,11 @@
 
     #document-outline.open {
       display: block;
+    }
+
+    body.reader-fullscreen #document-outline {
+      height: 100vh;
+      max-height: 100vh;
     }
 
     .outline-list,
