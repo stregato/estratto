@@ -77,9 +77,10 @@
       display: flex;
       align-items: flex-start;
       height: 100%;
-      min-height: 100%;
+      min-height: 0;
       min-width: 100%;
       width: 100%;
+      overflow: hidden;
     }
 
     #document-outline {
@@ -138,7 +139,7 @@
     #document-scroll {
       flex: 1 1 auto;
       height: 100%;
-      min-height: 100%;
+      min-height: 0;
       min-width: 0;
       overflow: auto;
     }
@@ -146,7 +147,7 @@
     #pdf-stage {
       flex: 1 0 auto;
       height: 100%;
-      min-height: 100%;
+      min-height: 0;
       min-width: 100%;
       display: flex;
       justify-content: center;
@@ -158,6 +159,7 @@
 
     #viewer-container.epub-mode #viewer-content {
       display: flex;
+      min-height: 0;
     }
 
     #viewer-container.epub-mode #document-scroll {
@@ -350,6 +352,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/epubjs@0.3.93/dist/epub.min.js"></script>
 
-  <script src="/static/viewer.js?v=31"></script>
+  <script src="/static/viewer.js?v=32"></script>
 </body>
 </html>

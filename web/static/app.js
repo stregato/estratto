@@ -336,7 +336,7 @@
   let arxivTotal = 0;
   let telegramLoginStage = "phone";
   const READER_STATE_VERSION = "3";
-  const VIEWER_EMBED_VERSION = "31";
+  const VIEWER_EMBED_VERSION = "32";
   const savedReaderStateVersion = localStorage.getItem("readerStateVersion");
   if (savedReaderStateVersion !== READER_STATE_VERSION) {
     localStorage.removeItem("openDocuments");
