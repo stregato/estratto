@@ -239,11 +239,21 @@
       padding: 20px 0 48px;
     }
 
+    #pdf-iframe,
+    #comic-viewer,
+    #website-viewer {
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+    }
+
     #comic-viewer {
       display: flex;
       flex-direction: column;
       align-items: center;
       padding: 20px;
+      overflow: auto;
+      background: var(--bg);
     }
 
     #website-viewer {

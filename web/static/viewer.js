@@ -178,6 +178,7 @@
     }
 
     websiteViewer.style.display = "block";
+    viewerContent.style.display = "none";
     websiteViewer.referrerPolicy = "no-referrer";
     if (websiteUrlEl) {
       websiteUrlEl.textContent = websiteSrc;
@@ -1070,6 +1071,7 @@
   async function initComicViewer() {
     const container = document.getElementById("comic-viewer");
     container.style.display = "block";
+    viewerContent.style.display = "none";
     showLoading("Loading comic archive...");
 
     // Fetch the CBZ/CBR file
