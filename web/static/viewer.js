@@ -26,9 +26,14 @@
   const zoomInBtn = document.getElementById("zoom-in-btn");
   const zoomInfo = document.getElementById("zoom-info");
   const outlineToggleBtn = document.getElementById("outline-toggle-btn");
+  const openExternalBtn = document.getElementById("open-external-btn");
   const documentOutline = document.getElementById("document-outline") || document.getElementById("pdf-outline");
   const loadingOverlay = document.getElementById("viewer-loading");
   const loadingText = document.getElementById("viewer-loading-text");
+  const websiteFallback = document.getElementById("website-fallback");
+  const websiteFallbackText = document.getElementById("website-fallback-text");
+  const websiteOpenDirectBtn = document.getElementById("website-open-direct-btn");
+  const websiteUrlEl = document.getElementById("website-url");
 
   const prevBtn = document.getElementById("prev-page");
   const nextBtn = document.getElementById("next-page");
@@ -126,9 +131,43 @@
     }
   }
 
+  function openWebsiteDirectly() {
+    if (!websiteSrc) return;
+    const opened = window.open(websiteSrc, "_blank", "noopener,noreferrer");
+    if (!opened) {
+      window.location.href = websiteSrc;
+    }
+  }
+
+  function setWebsiteFallbackVisible(visible, message = "") {
+    if (!websiteFallback) return;
+    websiteFallback.classList.toggle("visible", visible);
+    if (message && websiteFallbackText) {
+      websiteFallbackText.textContent = message;
+    }
+  }
+
   function initWebsiteViewer() {
     const websiteViewer = document.getElementById("website-viewer");
     let websiteScale = 1;
+    let loadSettled = false;
+    let fallbackTimer = null;
+
+    function finishWebsiteLoad() {
+      if (loadSettled) return;
+      loadSettled = true;
+      if (fallbackTimer) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
+      hideLoading();
+    }
+
+    function maybeShowEmbeddedFallback(reason = "") {
+      const message = reason || "This website appears to block embedded viewing. Open it directly instead.";
+      setWebsiteFallbackVisible(true, message);
+      hideLoading();
+    }
 
     function applyWebsiteZoom(scale) {
       websiteScale = Math.max(0.5, Math.min(2.5, scale));
@@ -139,6 +178,18 @@
     }
 
     websiteViewer.style.display = "block";
+    websiteViewer.referrerPolicy = "no-referrer";
+    if (websiteUrlEl) {
+      websiteUrlEl.textContent = websiteSrc;
+    }
+    if (openExternalBtn) {
+      openExternalBtn.style.display = "inline-block";
+      openExternalBtn.onclick = openWebsiteDirectly;
+    }
+    if (websiteOpenDirectBtn) {
+      websiteOpenDirectBtn.onclick = openWebsiteDirectly;
+    }
+    setWebsiteFallbackVisible(false);
     websiteViewer.src = websiteSrc;
     prevBtn.style.display = "none";
     nextBtn.style.display = "none";
@@ -150,7 +201,25 @@
     zoomOutBtn.onclick = () => applyWebsiteZoom(websiteScale - 0.1);
     zoomInBtn.onclick = () => applyWebsiteZoom(websiteScale + 0.1);
     applyWebsiteZoom(1);
-    hideLoading();
+    fallbackTimer = window.setTimeout(() => {
+      if (!loadSettled) {
+        maybeShowEmbeddedFallback("This website did not finish rendering in the embedded tab. It may block framing.");
+      }
+    }, 4000);
+    websiteViewer.addEventListener("load", () => {
+      finishWebsiteLoad();
+      try {
+        const frameLocation = websiteViewer.contentWindow?.location?.href || "";
+        if (!frameLocation || frameLocation === "about:blank") {
+          maybeShowEmbeddedFallback("This website resolved to a blank embedded page. Open it directly instead.");
+        }
+      } catch (_err) {
+        // Cross-origin access is expected for working remote sites.
+      }
+    }, { once: true });
+    websiteViewer.addEventListener("error", () => {
+      maybeShowEmbeddedFallback("The embedded website failed to load. Open it directly instead.");
+    }, { once: true });
     clearViewerKeyHandler();
     currentViewer = "website";
   }
