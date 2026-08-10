@@ -829,7 +829,7 @@
   async function initEpubViewer() {
     const container = document.getElementById("epub-viewer");
     const viewerContent = document.getElementById("viewer-content");
-    const stage = document.getElementById("pdf-stage");
+    const stage = document.getElementById("viewer-stage");
     viewerContainer.classList.add("epub-mode");
     container.style.display = "block";
     viewerContent.style.display = "flex";

@@ -335,7 +335,7 @@
   let arxivCategory = "";
   let arxivTotal = 0;
   let telegramLoginStage = "phone";
-  const READER_STATE_VERSION = "3";
+  const READER_STATE_VERSION = "4";
   const VIEWER_EMBED_VERSION = "32";
   const savedReaderStateVersion = localStorage.getItem("readerStateVersion");
   if (savedReaderStateVersion !== READER_STATE_VERSION) {
@@ -483,9 +483,14 @@
       }
       const iframe = view.querySelector(".reader-frame");
       const wantedSrc = doc.kind === "website"
-        ? `/viewer?kind=website&id=${encodeURIComponent(doc.messageId)}&filename=${encodeURIComponent(doc.filename)}&src=${encodeURIComponent(doc.src || "")}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}`
+        ? (doc.src || "")
         : `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&ext=${encodeURIComponent(doc.ext || "")}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}`;
       if (doc.messageId === activeDocumentId && iframe && iframe.getAttribute("src") !== wantedSrc) {
+        if (doc.kind === "website") {
+          iframe.setAttribute("referrerpolicy", "no-referrer");
+        } else {
+          iframe.removeAttribute("referrerpolicy");
+        }
         iframe.setAttribute("src", wantedSrc);
       }
       view.classList.toggle("active", doc.messageId === activeDocumentId);
