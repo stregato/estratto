@@ -67,6 +67,25 @@ edited from the web UI's Configuration tab, which saves back to `config.yaml` (p
 the file's comments). Changes to `telegram.*`, `staging.*`, or `db.path` need a service
 restart to take effect; everything else is picked up on the next action.
 
+### 5. Optional: configure SMTP for email sign-in
+
+Estratto's Account tab can send real sign-in codes by email when SMTP is configured. It
+uses the same variable names as Appunto:
+
+```bash
+MAIL_HOST=smtp.example.com
+MAIL_PORT=465
+MAIL_SECURE=true
+MAIL_USER=login@example.com
+MAIL_PASS=replace_me
+MAIL_FROM="Estratto <login@example.com>"
+EMAIL_CODE_TTL_MINUTES=15
+```
+
+You can also put the same values under `mail.*` and `auth.email_code_ttl_minutes` in
+`config.yaml`. If SMTP is not configured, Estratto falls back to showing the generated
+code directly in the Account tab for local development.
+
 ### 6. Run it
 
 ```bash

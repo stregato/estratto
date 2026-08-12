@@ -34,6 +34,20 @@ extensions:
 db:
   path: "./estratto.db"
 
+auth:
+  # Minutes a generated email sign-in code stays valid.
+  email_code_ttl_minutes: 15
+
+mail:
+  # Same SMTP env names as Appunto are supported and override these values:
+  # MAIL_HOST, MAIL_PORT, MAIL_SECURE, MAIL_USER, MAIL_PASS, MAIL_FROM
+  host: ""
+  port: 465
+  secure: true
+  user: ""
+  pass: ""
+  from: ""
+
 openai:
   # Set enabled: false to skip LLM classification entirely (filename/metadata-only sorting)
   enabled: false

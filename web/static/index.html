@@ -31,6 +31,7 @@
     <div class="settings-menu">
       <button id="settings-toggle" class="settings-btn">⚙️</button>
       <div id="settings-dropdown" class="dropdown" style="display:none">
+        <button class="tab-btn" data-tab="account">Account</button>
         <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="config">Configuration</button>
         <button id="reset-catalog-menu-btn" class="tab-btn">Reset catalog</button>
@@ -202,6 +203,32 @@
           <thead><tr><th>Message</th><th>Filename</th><th>Status</th><th>Final path</th><th>Updated</th></tr></thead>
           <tbody id="recent-body"></tbody>
         </table>
+      </section>
+
+      <section id="tab-account" class="tab">
+        <div class="card">
+          <h3>Account</h3>
+          <p class="muted">Email sign-in enables synced open documents, reading position, and zoom across devices on this Estratto server.</p>
+          <div id="auth-signed-out">
+            <label>Email
+              <input id="auth-email-input" type="email" placeholder="you@example.com" autocomplete="email">
+            </label>
+            <button id="auth-request-code-btn" type="button">Generate sign-in code</button>
+            <p id="auth-request-message" class="muted"></p>
+            <div id="auth-code-step" style="display:none">
+              <label>Code
+                <input id="auth-code-input" type="text" inputmode="numeric" placeholder="6-digit code" autocomplete="one-time-code">
+              </label>
+              <button id="auth-verify-code-btn" type="button">Sign in</button>
+              <p id="auth-verify-message" class="muted"></p>
+            </div>
+          </div>
+          <div id="auth-signed-in" style="display:none">
+            <p>Signed in as <strong id="auth-email-display"></strong></p>
+            <button id="auth-logout-btn" type="button">Log out</button>
+            <p class="muted">If SMTP is configured on this server, sign-in codes are delivered by email. Otherwise Estratto falls back to showing the generated code directly in the UI.</p>
+          </div>
+        </div>
       </section>
 
       <section id="tab-config" class="tab">

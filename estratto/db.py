@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,55 @@ CREATE TABLE IF NOT EXISTS reading_progress (
     scroll_position REAL DEFAULT 0,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (message_id) REFERENCES catalog(message_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS email_login_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_login_codes_email ON email_login_codes(email);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    session_hash TEXT NOT NULL UNIQUE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_workspace_state (
+    user_id INTEGER PRIMARY KEY,
+    open_documents_json TEXT NOT NULL DEFAULT '[]',
+    active_document_id TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS user_document_state (
+    user_id INTEGER NOT NULL,
+    document_id TEXT NOT NULL,
+    document_kind TEXT DEFAULT 'file',
+    current_page INTEGER DEFAULT 1,
+    total_pages INTEGER,
+    scroll_position TEXT DEFAULT '0',
+    viewer_prefs_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, document_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
 
@@ -570,4 +620,190 @@ class Database:
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (message_id, current_page, total_pages, scroll_position),
+            )
+
+    # Auth / synced workspace state ----------------------------------------
+
+    def get_user_by_email(self, email: str) -> Optional[dict]:
+        with self._lock:
+            cur = self._conn.execute("SELECT * FROM users WHERE email = ?", (email,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def create_or_update_user(self, email: str, last_login_at: Optional[str] = None) -> dict:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (email, last_login_at)
+                VALUES (?, ?)
+                ON CONFLICT(email) DO UPDATE SET
+                    last_login_at = COALESCE(excluded.last_login_at, users.last_login_at)
+                """,
+                (email, last_login_at),
+            )
+        user = self.get_user_by_email(email)
+        assert user is not None
+        return user
+
+    def create_email_login_code(self, email: str, code_hash: str, expires_at: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO email_login_codes (email, code_hash, expires_at) VALUES (?, ?, ?)",
+                (email, code_hash, expires_at),
+            )
+
+    def consume_email_login_code(self, email: str, code_hash: str, now_iso: str) -> bool:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                UPDATE email_login_codes
+                SET consumed_at = ?
+                WHERE id = (
+                    SELECT id
+                    FROM email_login_codes
+                    WHERE email = ?
+                      AND code_hash = ?
+                      AND consumed_at IS NULL
+                      AND expires_at >= ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                )
+                """,
+                (now_iso, email, code_hash, now_iso),
+            )
+            return cur.rowcount > 0
+
+    def prune_expired_email_login_codes(self, now_iso: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM email_login_codes
+                WHERE expires_at < ? OR consumed_at IS NOT NULL
+                """,
+                (now_iso,),
+            )
+
+    def create_user_session(self, user_id: int, session_hash: str, expires_at: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_sessions (user_id, session_hash, expires_at)
+                VALUES (?, ?, ?)
+                """,
+                (user_id, session_hash, expires_at),
+            )
+
+    def get_user_by_session(self, session_hash: str, now_iso: str) -> Optional[dict]:
+        with self._cursor() as cur:
+            row = cur.execute(
+                """
+                SELECT u.*
+                FROM user_sessions s
+                JOIN users u ON u.id = s.user_id
+                WHERE s.session_hash = ?
+                  AND s.expires_at >= ?
+                """,
+                (session_hash, now_iso),
+            ).fetchone()
+            if not row:
+                return None
+            cur.execute(
+                "UPDATE user_sessions SET last_seen_at = ? WHERE session_hash = ?",
+                (now_iso, session_hash),
+            )
+            return dict(row)
+
+    def delete_user_session(self, session_hash: str) -> None:
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM user_sessions WHERE session_hash = ?", (session_hash,))
+
+    def get_user_workspace_state(self, user_id: int) -> Optional[dict]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM user_workspace_state WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "open_documents": json.loads(row["open_documents_json"] or "[]"),
+            "active_document_id": row["active_document_id"],
+            "updated_at": row["updated_at"],
+        }
+
+    def save_user_workspace_state(
+        self,
+        user_id: int,
+        open_documents: list[dict],
+        active_document_id: Optional[str],
+    ) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_workspace_state (user_id, open_documents_json, active_document_id, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    open_documents_json = excluded.open_documents_json,
+                    active_document_id = excluded.active_document_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, json.dumps(open_documents), active_document_id),
+            )
+
+    def get_user_document_state(self, user_id: int, document_id: str) -> Optional[dict]:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT *
+                FROM user_document_state
+                WHERE user_id = ? AND document_id = ?
+                """,
+                (user_id, document_id),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "document_id": row["document_id"],
+            "document_kind": row["document_kind"],
+            "current_page": row["current_page"],
+            "total_pages": row["total_pages"],
+            "scroll_position": row["scroll_position"],
+            "viewer_prefs": json.loads(row["viewer_prefs_json"] or "{}"),
+            "updated_at": row["updated_at"],
+        }
+
+    def save_user_document_state(
+        self,
+        user_id: int,
+        document_id: str,
+        document_kind: str,
+        current_page: int = 1,
+        total_pages: Optional[int] = None,
+        scroll_position: str = "0",
+        viewer_prefs: Optional[dict] = None,
+    ) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_document_state (
+                    user_id, document_id, document_kind, current_page, total_pages, scroll_position, viewer_prefs_json, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, document_id) DO UPDATE SET
+                    document_kind = excluded.document_kind,
+                    current_page = excluded.current_page,
+                    total_pages = excluded.total_pages,
+                    scroll_position = excluded.scroll_position,
+                    viewer_prefs_json = excluded.viewer_prefs_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    user_id,
+                    document_id,
+                    document_kind,
+                    current_page,
+                    total_pages,
+                    str(scroll_position),
+                    json.dumps(viewer_prefs or {}),
+                ),
             )

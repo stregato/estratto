@@ -18,6 +18,7 @@
   document.getElementById("doc-title").textContent = filename;
   const viewerToolbar = document.getElementById("viewer-toolbar");
   const viewerContainer = document.getElementById("viewer-container");
+  const viewerContent = document.getElementById("viewer-content");
   const documentScroll = document.getElementById("document-scroll");
   const backBtn = document.getElementById("back-btn");
   const fullscreenBtn = document.getElementById("viewer-fullscreen-btn");
@@ -34,6 +35,12 @@
   const websiteFallbackText = document.getElementById("website-fallback-text");
   const websiteOpenDirectBtn = document.getElementById("website-open-direct-btn");
   const websiteUrlEl = document.getElementById("website-url");
+  const aiAssistModal = document.getElementById("ai-assist-modal");
+  const aiAssistClose = document.getElementById("ai-assist-close");
+  const aiSelectionPreview = document.getElementById("ai-selection-preview");
+  const aiCustomQuestion = document.getElementById("ai-custom-question");
+  const aiCustomSubmit = document.getElementById("ai-custom-submit");
+  const aiAnswer = document.getElementById("ai-answer");
 
   const prevBtn = document.getElementById("prev-page");
   const nextBtn = document.getElementById("next-page");
@@ -97,6 +104,86 @@
   let saveProgressTimer = null;
   let viewerKeyHandler = null;
   let localFullscreen = false;
+  let aiSelectedText = "";
+  let aiSelectionSource = "";
+  let aiAssistEnabled = false;
+  const documentKind = viewerKind === "website" ? "website" : "file";
+  let syncedDocumentState = {
+    document_id: messageId,
+    document_kind: documentKind,
+    current_page: 1,
+    total_pages: null,
+    scroll_position: 0,
+    viewer_prefs: {},
+  };
+
+  function getViewerPrefsKey() {
+    return `viewerPrefs:${messageId}`;
+  }
+
+  function getViewerPrefs() {
+    const syncedPrefs = syncedDocumentState?.viewer_prefs || {};
+    try {
+      const raw = localStorage.getItem(getViewerPrefsKey());
+      const localPrefs = raw ? JSON.parse(raw) : {};
+      return { ...localPrefs, ...syncedPrefs };
+    } catch (_e) {
+      return syncedPrefs;
+    }
+  }
+
+  function saveViewerPrefs(patch) {
+    syncedDocumentState.viewer_prefs = {
+      ...(syncedDocumentState.viewer_prefs || {}),
+      ...patch,
+    };
+    try {
+      const next = { ...getViewerPrefs(), ...patch };
+      localStorage.setItem(getViewerPrefsKey(), JSON.stringify(next));
+    } catch (_e) {
+      // Ignore localStorage failures.
+    }
+    scheduleDocumentStateSave();
+  }
+
+  async function loadDocumentState() {
+    try {
+      const params = new URLSearchParams({
+        document_id: messageId,
+        document_kind: documentKind,
+      });
+      const state = await api(`/api/document-state?${params.toString()}`);
+      syncedDocumentState = {
+        ...syncedDocumentState,
+        ...state,
+        viewer_prefs: state.viewer_prefs || {},
+      };
+    } catch (e) {
+      console.warn("Failed to load document state:", e);
+    }
+  }
+
+  function scheduleDocumentStateSave(overrides = {}, delay = 300) {
+    clearTimeout(saveProgressTimer);
+    syncedDocumentState = {
+      ...syncedDocumentState,
+      ...overrides,
+      viewer_prefs: {
+        ...(syncedDocumentState.viewer_prefs || {}),
+        ...(overrides.viewer_prefs || {}),
+      },
+    };
+    saveProgressTimer = setTimeout(async () => {
+      try {
+        await api("/api/document-state", {
+          method: "POST",
+          body: JSON.stringify(syncedDocumentState),
+        });
+      } catch (e) {
+        console.error("Failed to save document state:", e);
+      }
+    }, delay);
+  }
 
   function inferExtFromFilename(name) {
     if (!name || !name.includes(".")) return "";
@@ -109,6 +196,16 @@
     } catch (e) {
       console.warn("Failed to load file metadata:", e);
       return { exists: true, filename, ext: extParam || inferExtFromFilename(filename) };
+    }
+  }
+
+  async function loadAiAssistAvailability() {
+    try {
+      const status = await api("/api/status");
+      aiAssistEnabled = Boolean(status.openai_enabled);
+    } catch (e) {
+      console.warn("Failed to load AI availability:", e);
+      aiAssistEnabled = false;
     }
   }
 
@@ -147,9 +244,11 @@
     }
   }
 
-  function initWebsiteViewer() {
+  async function initWebsiteViewer() {
+    await loadDocumentState();
     const websiteViewer = document.getElementById("website-viewer");
-    let websiteScale = 1;
+    const viewerPrefs = getViewerPrefs();
+    let websiteScale = Number(viewerPrefs.websiteZoom) || 1;
     let loadSettled = false;
     let fallbackTimer = null;
 
@@ -175,6 +274,7 @@
       websiteViewer.style.width = `${100 / websiteScale}%`;
       websiteViewer.style.height = `${100 / websiteScale}%`;
       updateZoomInfo(websiteScale);
+      saveViewerPrefs({ websiteZoom: websiteScale });
     }
 
     websiteViewer.style.display = "block";
@@ -201,7 +301,7 @@
     outlineToggleBtn.style.display = "none";
     zoomOutBtn.onclick = () => applyWebsiteZoom(websiteScale - 0.1);
     zoomInBtn.onclick = () => applyWebsiteZoom(websiteScale + 0.1);
-    applyWebsiteZoom(1);
+    applyWebsiteZoom(websiteScale);
     fallbackTimer = window.setTimeout(() => {
       if (!loadSettled) {
         maybeShowEmbeddedFallback("This website did not finish rendering in the embedded tab. It may block framing.");
@@ -213,9 +313,24 @@
         const frameLocation = websiteViewer.contentWindow?.location?.href || "";
         if (!frameLocation || frameLocation === "about:blank") {
           maybeShowEmbeddedFallback("This website resolved to a blank embedded page. Open it directly instead.");
+          return;
         }
+        const savedScrollY = Number(getViewerPrefs().websiteScrollY) || 0;
+        websiteViewer.contentWindow.scrollTo(0, savedScrollY);
+        websiteViewer.contentWindow.addEventListener("scroll", () => {
+          saveViewerPrefs({ websiteScrollY: websiteViewer.contentWindow.scrollY || 0 });
+        });
+        websiteViewer.contentDocument?.addEventListener("dblclick", () => {
+          window.setTimeout(() => {
+            const selection = websiteViewer.contentWindow?.getSelection?.();
+            const contextText = buildContextFromSelection(selection, websiteViewer.contentDocument?.body || null);
+            if (contextText) {
+              openAiAssistModal(contextText, "website");
+            }
+          }, 0);
+        });
       } catch (_err) {
-        // Cross-origin access is expected for working remote sites.
+        // Cross-origin access is expected for most remote sites, so scroll restore is best-effort only.
       }
     }, { once: true });
     websiteViewer.addEventListener("error", () => {
@@ -324,40 +439,138 @@
     window.location.href = "/";
   }
 
-  function saveProgress() {
-    // Debounce progress saving
-    clearTimeout(saveProgressTimer);
-    saveProgressTimer = setTimeout(async () => {
-      try {
-        await api(`/api/progress/${messageId}`, {
-          method: "POST",
-          body: JSON.stringify({
-            current_page: currentPage,
-            total_pages: totalPages,
-            scroll_position: documentScroll.scrollTop,
-          }),
-        });
-      } catch (e) {
-        console.error("Failed to save progress:", e);
+  function closeAiAssistModal() {
+    if (!aiAssistModal) return;
+    aiAssistModal.style.display = "none";
+  }
+
+  function openAiAssistModal(selectedText, source) {
+    if (!aiAssistEnabled) return;
+    const trimmed = String(selectedText || "").trim();
+    if (!trimmed || !aiAssistModal) return;
+    aiSelectedText = trimmed;
+    aiSelectionSource = source || currentViewer || "document";
+    if (aiSelectionPreview) {
+      aiSelectionPreview.textContent = trimmed;
+    }
+    if (aiAnswer) {
+      aiAnswer.textContent = "Choose an action or ask your own question.";
+    }
+    if (aiCustomQuestion) {
+      aiCustomQuestion.value = "";
+    }
+    aiAssistModal.style.display = "flex";
+  }
+
+  function normalizeContextText(text, maxLength = 1600) {
+    const normalized = String(text || "").replace(/\s+/g, " ").trim();
+    if (normalized.length <= maxLength) return normalized;
+    return `${normalized.slice(0, maxLength - 1)}…`;
+  }
+
+  function clipAroundSelection(fullText, selectedText, radius = 650) {
+    const normalizedFull = normalizeContextText(fullText, 12000);
+    const normalizedSelected = normalizeContextText(selectedText, 400);
+    if (!normalizedFull) return normalizedSelected;
+    if (!normalizedSelected) return normalizeContextText(normalizedFull, radius * 2);
+    const index = normalizedFull.toLowerCase().indexOf(normalizedSelected.toLowerCase());
+    if (index === -1) return normalizeContextText(normalizedFull, radius * 2);
+    const start = Math.max(0, index - radius);
+    const end = Math.min(normalizedFull.length, index + normalizedSelected.length + radius);
+    const prefix = start > 0 ? "…" : "";
+    const suffix = end < normalizedFull.length ? "…" : "";
+    return `${prefix}${normalizedFull.slice(start, end).trim()}${suffix}`;
+  }
+
+  function collectSiblingParagraphContext(block) {
+    if (!block) return "";
+    const parts = [];
+    const prev = block.previousElementSibling;
+    const next = block.nextElementSibling;
+    if (prev && /^(P|LI|BLOCKQUOTE|PRE|DIV)$/i.test(prev.tagName)) {
+      parts.push(normalizeContextText(prev.textContent, 500));
+    }
+    parts.push(normalizeContextText(block.textContent, 800));
+    if (next && /^(P|LI|BLOCKQUOTE|PRE|DIV)$/i.test(next.tagName)) {
+      parts.push(normalizeContextText(next.textContent, 500));
+    }
+    return parts.filter(Boolean).join("\n\n");
+  }
+
+  function buildContextFromSelection(selection, fallbackRoot = null) {
+    const selectedText = normalizeContextText(selection?.toString?.() || "", 600);
+    const anchorNode = selection?.anchorNode || null;
+    const element = anchorNode && anchorNode.nodeType === Node.TEXT_NODE ? anchorNode.parentElement : anchorNode;
+    if (!element) {
+      return selectedText;
+    }
+
+    const pdfPage = element.closest?.(".pdf-page");
+    if (pdfPage) {
+      const pageText = pdfPage.textContent || "";
+      return clipAroundSelection(pageText, selectedText);
+    }
+
+    const contextualBlock = element.closest?.("p, li, blockquote, pre, h1, h2, h3, h4, h5, h6, td, section, article, div");
+    if (contextualBlock) {
+      const context = collectSiblingParagraphContext(contextualBlock);
+      if (context) {
+        return clipAroundSelection(context, selectedText, 900);
       }
+    }
+
+    const rootText = fallbackRoot?.textContent || "";
+    return clipAroundSelection(rootText, selectedText);
+  }
+
+  async function submitAiAssist(action, question = "") {
+    if (!aiAssistEnabled) return;
+    if (!aiSelectedText || !aiAnswer) return;
+    aiAnswer.textContent = "Thinking...";
+    try {
+      const response = await api("/api/ai/ask", {
+        method: "POST",
+        body: JSON.stringify({
+          selection_text: aiSelectedText,
+          action,
+          question,
+          source: aiSelectionSource,
+        }),
+      });
+      aiAnswer.textContent = response.answer || "No answer returned.";
+    } catch (e) {
+      aiAnswer.textContent = `AI request failed: ${e.message}`;
+    }
+  }
+
+  function installDocumentSelectionTrigger(root, source, getSelectionText = null) {
+    if (!root) return;
+    root.addEventListener("dblclick", () => {
+      window.setTimeout(() => {
+        const selection = window.getSelection?.();
+        const contextText = getSelectionText
+          ? String(getSelectionText(selection) || "").trim()
+          : buildContextFromSelection(selection, root);
+        if (contextText) {
+          openAiAssistModal(contextText, source);
+        }
+      }, 0);
+    });
+  }
+
+  function saveProgress() {
+    scheduleDocumentStateSave({
+      current_page: currentPage,
+      total_pages: totalPages,
+      scroll_position: documentScroll.scrollTop,
     }, 1000);
   }
 
   function savePdfProgress(scrollRatio = 0) {
-    clearTimeout(saveProgressTimer);
-    saveProgressTimer = setTimeout(async () => {
-      try {
-        await api(`/api/progress/${messageId}`, {
-          method: "POST",
-          body: JSON.stringify({
-            current_page: currentPage,
-            total_pages: totalPages,
-            scroll_position: scrollRatio,
-          }),
-        });
-      } catch (e) {
-        console.error("Failed to save PDF progress:", e);
-      }
+    scheduleDocumentStateSave({
+      current_page: currentPage,
+      total_pages: totalPages,
+      scroll_position: scrollRatio,
     }, 300);
   }
 
@@ -367,9 +580,11 @@
 
     const pdfViewer = document.getElementById("pdf-viewer");
     const container = documentScroll;
-    const progress = await api(`/api/progress/${messageId}`);
+    await loadDocumentState();
+    const progress = syncedDocumentState;
+    const viewerPrefs = getViewerPrefs();
     let pdfDoc = null;
-    let currentScale = 1.2;
+    let currentScale = Math.max(0.7, Math.min(2.5, Number(viewerPrefs.pdfZoom) || 1.2));
     let renderVersion = 0;
     let pageEntries = [];
     let suppressScrollSave = false;
@@ -383,6 +598,7 @@
     let outlineLoading = false;
 
     pdfViewer.style.display = "flex";
+    installDocumentSelectionTrigger(pdfViewer, "pdf");
     showLoading("Loading PDF... 0%");
     prevBtn.style.display = "inline-block";
     nextBtn.style.display = "inline-block";
@@ -616,6 +832,7 @@
       updatePageInfo();
       suppressScrollSave = true;
       currentScale = nextScale;
+      saveViewerPrefs({ pdfZoom: currentScale });
       renderVersion += 1;
       updateZoomInfo(currentScale);
 
@@ -828,7 +1045,6 @@
   // EPUB Viewer
   async function initEpubViewer() {
     const container = document.getElementById("epub-viewer");
-    const viewerContent = document.getElementById("viewer-content");
     const stage = document.getElementById("viewer-stage");
     viewerContainer.classList.add("epub-mode");
     container.style.display = "block";
@@ -854,7 +1070,8 @@
       flow: "scrolled-doc",
       spread: "none",
     });
-    let fontScale = 1;
+    const viewerPrefs = getViewerPrefs();
+    let fontScale = Math.max(0.85, Math.min(1.8, Number(viewerPrefs.epubFontScale) || 1));
     let outlineOpen = false;
 
     rendition.themes.register("light", {
@@ -887,6 +1104,7 @@
       const cfi = location?.start?.cfi || null;
       rendition.themes.fontSize(`${Math.round(fontScale * 100)}%`);
       updateZoomInfo(fontScale);
+      saveViewerPrefs({ epubFontScale: fontScale });
       if (cfi) {
         await rendition.display(cfi);
       }
@@ -895,18 +1113,11 @@
     async function saveEpubProgress(cfi) {
       clearTimeout(saveProgressTimer);
       saveProgressTimer = setTimeout(async () => {
-        try {
-          await api(`/api/progress/${messageId}`, {
-            method: "POST",
-            body: JSON.stringify({
-              current_page: currentPage,
-              total_pages: totalPages,
-              scroll_position: cfi || 0,
-            }),
-          });
-        } catch (e) {
-          console.error("Failed to save EPUB progress:", e);
-        }
+        scheduleDocumentStateSave({
+          current_page: currentPage,
+          total_pages: totalPages,
+          scroll_position: cfi || 0,
+        }, 300);
       }, 300);
     }
 
@@ -972,7 +1183,8 @@
     }
 
     // Load saved progress
-    const progress = await api(`/api/progress/${messageId}`);
+    await loadDocumentState();
+    const progress = syncedDocumentState;
     const savedCfi = progress.scroll_position || null;
 
     prevBtn.style.display = "inline-block";
@@ -1014,6 +1226,14 @@
         updatePageInfo();
       }
       saveEpubProgress(location.start.cfi);
+    });
+
+    rendition.on("selected", (_cfiRange, contents) => {
+      const selection = contents?.window?.getSelection?.();
+      const contextText = buildContextFromSelection(selection, contents?.document?.body || null);
+      if (contextText) {
+        openAiAssistModal(contextText, "epub");
+      }
     });
 
     outlineToggleBtn.onclick = () => {
@@ -1088,7 +1308,8 @@
     totalPages = imageFiles.length;
 
     // Load saved progress
-    const progress = await api(`/api/progress/${messageId}`);
+    await loadDocumentState();
+    const progress = syncedDocumentState;
     currentPage = progress.current_page || 1;
 
     let imageElements = [];
@@ -1196,6 +1417,7 @@
   }
 
   (async () => {
+    await loadAiAssistAvailability();
     if (viewerKind === "website") {
       if (!websiteSrc) {
         reportViewerError("Missing website URL");
@@ -1251,6 +1473,31 @@
     }
   });
   closeBtn.addEventListener("click", closeViewer);
+  aiAssistClose?.addEventListener("click", closeAiAssistModal);
+  aiAssistModal?.addEventListener("click", (e) => {
+    if (e.target === aiAssistModal) {
+      closeAiAssistModal();
+    }
+  });
+  aiCustomSubmit?.addEventListener("click", () => {
+    const question = (aiCustomQuestion?.value || "").trim();
+    if (!question) {
+      if (aiAnswer) aiAnswer.textContent = "Enter a question first.";
+      return;
+    }
+    submitAiAssist("custom", question);
+  });
+  aiCustomQuestion?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      aiCustomSubmit?.click();
+    }
+  });
+  document.querySelectorAll("[data-ai-action]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      submitAiAssist(btn.getAttribute("data-ai-action") || "explain_simple");
+    });
+  });
 
   document.addEventListener("fullscreenchange", updateFullscreenLabel);
   updateFullscreenLabel();

@@ -7,23 +7,27 @@ on-demand downloads, and the optional background listener all share one connecti
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
+import secrets
 import shutil
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
-from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Cookie, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
 import requests
 
 from . import arxiv_client
 from . import db as db_module
+from . import mail as mail_module
 from . import tagger
 from .config import Config
 from .kavita_client import KavitaClient
@@ -34,6 +38,8 @@ from .telegram_client import EstrattoTelegramClient
 logger = logging.getLogger("estratto.web")
 
 STATIC_DIR = static_dir()
+SESSION_COOKIE_NAME = "estratto_session"
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _resolve_config_relative_path(base_dir: Path, raw_path: Optional[str]) -> Optional[Path]:
@@ -206,6 +212,36 @@ class AppKeysBody(BaseModel):
     api_hash: str
 
 
+class EmailCodeRequestBody(BaseModel):
+    email: str
+
+
+class EmailCodeVerifyBody(BaseModel):
+    email: str
+    code: str
+
+
+class WorkspaceStateBody(BaseModel):
+    open_documents: list[dict]
+    active_document_id: Optional[str] = None
+
+
+class DocumentStateBody(BaseModel):
+    document_id: str
+    document_kind: str = "file"
+    current_page: int = 1
+    total_pages: Optional[int] = None
+    scroll_position: Union[str, int, float] = "0"
+    viewer_prefs: dict = Field(default_factory=dict)
+
+
+class AiAskBody(BaseModel):
+    selection_text: str
+    action: str = "explain_simple"
+    question: Optional[str] = None
+    source: Optional[str] = None
+
+
 state: Optional[AppState] = None
 
 
@@ -239,13 +275,47 @@ def create_app(config_path: str = None) -> FastAPI:
     app = FastAPI(title="Estratto", lifespan=lifespan)
     app.state.config_path = config_path
 
+    def _utcnow() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _normalize_email(raw: str) -> str:
+        email = raw.strip().lower()
+        if not EMAIL_RE.match(email):
+            raise HTTPException(400, "Enter a valid email address")
+        return email
+
+    def _hash_secret(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    def _session_cookie_kwargs(expires_at: datetime) -> dict:
+        return {
+            "key": SESSION_COOKIE_NAME,
+            "expires": expires_at,
+            "httponly": True,
+            "samesite": "lax",
+            "secure": False,
+            "path": "/",
+        }
+
+    def _current_user(session_token: Optional[str]) -> Optional[dict]:
+        if not session_token:
+            return None
+        return state.db.get_user_by_session(_hash_secret(session_token), _utcnow().isoformat())
+
+    def _require_user(session_token: Optional[str]) -> dict:
+        user = _current_user(session_token)
+        if not user:
+            raise HTTPException(401, "Sign in first")
+        return user
+
     # ---- Status -----------------------------------------------------------
 
     @app.get("/api/status")
-    async def status():
+    async def status(estratto_session: Optional[str] = Cookie(default=None)):
         authorized = await state.telegram.is_authorized()
         api_id = str(state.cfg.get("telegram", "api_id", default=""))
         api_hash = str(state.cfg.get("telegram", "api_hash", default=""))
+        user = _current_user(estratto_session)
         return {
             "telegram_authorized": authorized,
             "telegram_app_configured": bool(api_id) and bool(api_hash) and "YOUR_" not in api_hash,
@@ -257,7 +327,100 @@ def create_app(config_path: str = None) -> FastAPI:
             "kavita_configured": state.kavita is not None,
             "openai_enabled": state.cfg.openai_enabled,
             "channel": state.cfg.get("telegram", "channel", default=""),
+            "auth": {
+                "authenticated": bool(user),
+                "email": user["email"] if user else None,
+            },
         }
+
+    # ---- Email auth --------------------------------------------------------
+
+    @app.get("/api/auth/status")
+    async def auth_status(estratto_session: Optional[str] = Cookie(default=None)):
+        user = _current_user(estratto_session)
+        return {
+            "authenticated": bool(user),
+            "email": user["email"] if user else None,
+        }
+
+    @app.post("/api/auth/request_code")
+    async def request_auth_code(body: EmailCodeRequestBody):
+        email = _normalize_email(body.email)
+        code = f"{secrets.randbelow(1000000):06d}"
+        expires_at = _utcnow() + timedelta(minutes=state.cfg.email_code_ttl_minutes)
+        state.db.create_email_login_code(email, _hash_secret(code), expires_at.isoformat())
+        state.db.prune_expired_email_login_codes(_utcnow().isoformat())
+        logger.info("Generated Estratto email login code for %s", email)
+
+        if mail_module.is_mail_configured(state.cfg):
+            text = "\n".join([
+                f"Your Estratto sign-in code is {code}.",
+                "",
+                f"It expires in {state.cfg.email_code_ttl_minutes} minutes.",
+                "If you did not request this code, you can ignore this email.",
+            ])
+            try:
+                await asyncio.to_thread(
+                    mail_module.send_email,
+                    state.cfg,
+                    to=email,
+                    subject="Your Estratto code",
+                    text=text,
+                )
+            except Exception as exc:
+                logger.exception("Could not send auth email to %s", email)
+                raise HTTPException(502, f"Could not send email: {exc}") from exc
+            return {
+                "status": "code_sent",
+                "delivery": "email",
+                "expires_at": expires_at.isoformat(),
+                "note": "Check your inbox for the sign-in code.",
+            }
+
+        logger.info("SMTP not configured; falling back to preview code for %s: %s", email, code)
+        return {
+            "status": "code_generated",
+            "delivery": "preview",
+            "preview_code": code,
+            "expires_at": expires_at.isoformat(),
+            "note": "SMTP is not configured on this server. Use the generated code shown here.",
+        }
+
+    @app.post("/api/auth/verify_code")
+    async def verify_auth_code(
+        body: EmailCodeVerifyBody,
+        response: Response,
+    ):
+        email = _normalize_email(body.email)
+        code = body.code.strip()
+        if not code:
+            raise HTTPException(400, "Enter the code")
+
+        now = _utcnow()
+        matched = state.db.consume_email_login_code(email, _hash_secret(code), now.isoformat())
+        if not matched:
+            raise HTTPException(400, "Invalid or expired code")
+
+        user = state.db.create_or_update_user(email, last_login_at=now.isoformat())
+        session_token = secrets.token_urlsafe(32)
+        expires_at = now + timedelta(days=30)
+        state.db.create_user_session(user["id"], _hash_secret(session_token), expires_at.isoformat())
+        response.set_cookie(value=session_token, **_session_cookie_kwargs(expires_at))
+        return {
+            "status": "authenticated",
+            "email": user["email"],
+            "expires_at": expires_at.isoformat(),
+        }
+
+    @app.post("/api/auth/logout")
+    async def auth_logout(
+        response: Response,
+        estratto_session: Optional[str] = Cookie(default=None),
+    ):
+        if estratto_session:
+            state.db.delete_user_session(_hash_secret(estratto_session))
+        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return {"status": "logged_out"}
 
     @app.get("/api/recent")
     async def recent(limit: int = 50):
@@ -723,22 +886,97 @@ def create_app(config_path: str = None) -> FastAPI:
 
     # ---- Reading progress -----------------------------------------------------
 
-    @app.get("/api/progress/{message_id}")
-    async def get_progress(message_id: int):
-        progress = state.db.get_reading_progress(message_id)
-        if not progress:
-            return {"current_page": 1, "total_pages": None, "scroll_position": 0}
-        return progress
+    @app.get("/api/workspace-state")
+    async def get_workspace_state(estratto_session: Optional[str] = Cookie(default=None)):
+        user = _require_user(estratto_session)
+        state_data = state.db.get_user_workspace_state(user["id"])
+        if not state_data:
+            return {"open_documents": [], "active_document_id": None}
+        return state_data
 
-    @app.post("/api/progress/{message_id}")
-    async def save_progress(message_id: int, data: dict):
-        state.db.save_reading_progress(
-            message_id=message_id,
-            current_page=data.get("current_page", 1),
-            total_pages=data.get("total_pages"),
-            scroll_position=data.get("scroll_position", 0),
+    @app.post("/api/workspace-state")
+    async def save_workspace_state(
+        body: WorkspaceStateBody,
+        estratto_session: Optional[str] = Cookie(default=None),
+    ):
+        user = _require_user(estratto_session)
+        state.db.save_user_workspace_state(
+            user["id"],
+            body.open_documents,
+            body.active_document_id,
         )
         return {"status": "saved"}
+
+    @app.get("/api/document-state")
+    async def get_document_state(
+        document_id: str,
+        document_kind: str = "file",
+        estratto_session: Optional[str] = Cookie(default=None),
+    ):
+        user = _current_user(estratto_session)
+        if user:
+            synced_state = state.db.get_user_document_state(user["id"], document_id)
+            if synced_state:
+                return synced_state
+
+        if document_kind == "file":
+            try:
+                message_id = int(document_id)
+            except ValueError:
+                return {
+                    "document_id": document_id,
+                    "document_kind": document_kind,
+                    "current_page": 1,
+                    "total_pages": None,
+                    "scroll_position": 0,
+                    "viewer_prefs": {},
+                }
+            progress = state.db.get_reading_progress(message_id)
+            if progress:
+                progress["document_id"] = document_id
+                progress["document_kind"] = document_kind
+                progress["viewer_prefs"] = {}
+                return progress
+
+        return {
+            "document_id": document_id,
+            "document_kind": document_kind,
+            "current_page": 1,
+            "total_pages": None,
+            "scroll_position": 0,
+            "viewer_prefs": {},
+        }
+
+    @app.post("/api/document-state")
+    async def save_document_state(
+        body: DocumentStateBody,
+        estratto_session: Optional[str] = Cookie(default=None),
+    ):
+        user = _current_user(estratto_session)
+        if user:
+            state.db.save_user_document_state(
+                user["id"],
+                body.document_id,
+                body.document_kind,
+                current_page=body.current_page,
+                total_pages=body.total_pages,
+                scroll_position=str(body.scroll_position),
+                viewer_prefs=body.viewer_prefs,
+            )
+            return {"status": "saved", "synced": True}
+
+        if body.document_kind == "file":
+            try:
+                message_id = int(body.document_id)
+            except ValueError:
+                return {"status": "ignored", "synced": False}
+            state.db.save_reading_progress(
+                message_id=message_id,
+                current_page=body.current_page,
+                total_pages=body.total_pages,
+                scroll_position=body.scroll_position,
+            )
+        return {"status": "saved", "synced": False}
 
     @app.get("/api/file_status/{message_id}")
     async def file_status(message_id: int):
@@ -756,6 +994,79 @@ def create_app(config_path: str = None) -> FastAPI:
     async def website_title(url: str):
         title = await asyncio.to_thread(_fetch_website_title, url)
         return {"title": title}
+
+    @app.post("/api/ai/ask")
+    async def ask_ai(body: AiAskBody):
+        if not state.cfg.openai_enabled:
+            raise HTTPException(400, "OpenAI is disabled in configuration")
+
+        api_key = str(state.cfg.get("openai", "api_key", default="")).strip()
+        if not api_key or api_key == "YOUR_OPENAI_API_KEY":
+            raise HTTPException(400, "OpenAI API key is not configured")
+
+        selection_text = body.selection_text.strip()
+        if not selection_text:
+            raise HTTPException(400, "No selected text provided")
+
+        action = (body.action or "explain_simple").strip()
+        question = (body.question or "").strip()
+        model = str(state.cfg.get("openai", "model", default="gpt-4o-mini")).strip() or "gpt-4o-mini"
+
+        prompts = {
+            "explain_simple": "Explain the selected text in simple words for a non-expert reader.",
+            "more_examples": "Explain the selected text with a few concrete examples or analogies.",
+            "find_references": "Suggest a few relevant related references or literature leads based on the selected text. If you are uncertain, say they are possible leads rather than exact matches.",
+            "summarize": "Summarize the selected text concisely.",
+        }
+        instruction = prompts.get(action, prompts["explain_simple"])
+        if action == "custom":
+            if not question:
+                raise HTTPException(400, "Custom question is empty")
+            instruction = question
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise HTTPException(500, "openai package is not installed") from exc
+
+        client = OpenAI(api_key=api_key)
+        clipped_text = selection_text[:6000]
+        source = (body.source or "").strip()
+        source_line = f"Source type: {source}\n" if source else ""
+
+        try:
+            response = await asyncio.to_thread(
+                lambda: client.chat.completions.create(
+                    model=model,
+                    temperature=0.3,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You answer questions about selected reading text. "
+                                "Be accurate, concise, and directly useful. "
+                                "If the text is ambiguous, say so plainly."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"{source_line}"
+                                f"Instruction: {instruction}\n\n"
+                                f"Selected text:\n\"\"\"\n{clipped_text}\n\"\"\""
+                            ),
+                        },
+                    ],
+                )
+            )
+        except Exception as exc:
+            logger.exception("AI request failed")
+            raise HTTPException(502, f"AI request failed: {exc}") from exc
+
+        answer = (response.choices[0].message.content or "").strip()
+        if not answer:
+            raise HTTPException(502, "AI returned an empty response")
+        return {"answer": answer}
 
     # ---- File serving ---------------------------------------------------------
 

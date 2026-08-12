@@ -23,6 +23,13 @@ _ENV_OVERRIDES = {
     ("openai", "api_key"): "ESTRATTO_OPENAI_API_KEY",
     ("kavita", "api_key"): "ESTRATTO_KAVITA_API_KEY",
     ("kavita", "base_url"): "ESTRATTO_KAVITA_BASE_URL",
+    ("auth", "email_code_ttl_minutes"): "EMAIL_CODE_TTL_MINUTES",
+    ("mail", "host"): "MAIL_HOST",
+    ("mail", "port"): "MAIL_PORT",
+    ("mail", "secure"): "MAIL_SECURE",
+    ("mail", "user"): "MAIL_USER",
+    ("mail", "pass"): "MAIL_PASS",
+    ("mail", "from"): "MAIL_FROM",
 }
 
 # Keys treated as secret: masked when serialized for the web UI's config viewer.
@@ -30,6 +37,7 @@ SECRET_KEYS = {
     ("telegram", "api_hash"),
     ("openai", "api_key"),
     ("kavita", "api_key"),
+    ("mail", "pass"),
 }
 
 
@@ -142,3 +150,34 @@ class Config:
     @property
     def web_port(self) -> int:
         return int(self.get("web", "port", default=8000))
+
+    @property
+    def email_code_ttl_minutes(self) -> int:
+        return int(self.get("auth", "email_code_ttl_minutes", default=15))
+
+    @property
+    def mail_host(self) -> str:
+        return str(self.get("mail", "host", default="")).strip()
+
+    @property
+    def mail_port(self) -> int:
+        return int(self.get("mail", "port", default=465))
+
+    @property
+    def mail_secure(self) -> bool:
+        value = self.get("mail", "secure", default=True)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @property
+    def mail_user(self) -> str:
+        return str(self.get("mail", "user", default="")).strip()
+
+    @property
+    def mail_pass(self) -> str:
+        return str(self.get("mail", "pass", default="")).strip()
+
+    @property
+    def mail_from(self) -> str:
+        return str(self.get("mail", "from", default="")).strip()

@@ -34,6 +34,19 @@
   const settingsToggle = $("#settings-toggle");
   const settingsDropdown = $("#settings-dropdown");
   const telegramAdvancedModal = $("#telegram-advanced-modal");
+  const authSignedOut = $("#auth-signed-out");
+  const authSignedIn = $("#auth-signed-in");
+  const authEmailInput = $("#auth-email-input");
+  const authCodeInput = $("#auth-code-input");
+  const authCodeStep = $("#auth-code-step");
+  const authRequestMessage = $("#auth-request-message");
+  const authVerifyMessage = $("#auth-verify-message");
+  const authEmailDisplay = $("#auth-email-display");
+
+  let authState = { authenticated: false, email: null };
+  let pendingAuthEmail = "";
+  let workspaceSyncTimer = null;
+  let hydratingWorkspace = false;
 
   let themePreference = localStorage.getItem("themePreference") || "";
   const appHeader = document.querySelector("header");
@@ -311,6 +324,7 @@
         $("#arxiv-page-info").textContent = "";
       }
 
+      if (btn.dataset.tab === "account") loadAuthStatus();
       if (btn.dataset.tab === "status") refreshStatus();
       if (btn.dataset.tab === "config") loadConfig();
     });
@@ -336,7 +350,7 @@
   let arxivTotal = 0;
   let telegramLoginStage = "phone";
   const READER_STATE_VERSION = "4";
-  const VIEWER_EMBED_VERSION = "32";
+  const VIEWER_EMBED_VERSION = "35";
   const savedReaderStateVersion = localStorage.getItem("readerStateVersion");
   if (savedReaderStateVersion !== READER_STATE_VERSION) {
     localStorage.removeItem("openDocuments");
@@ -367,10 +381,74 @@
       message_date: item.message_date || "",
     }));
 
+  function normalizeOpenDocumentsList(rawDocuments) {
+    return (Array.isArray(rawDocuments) ? rawDocuments : [])
+      .filter((doc) => doc && doc.messageId && doc.filename)
+      .map((doc) => ({
+        messageId: String(doc.messageId),
+        filename: String(doc.filename),
+        ext: typeof doc.ext === "string" ? doc.ext : "",
+        kind: doc.kind === "website" ? "website" : "file",
+        src: doc.kind === "website" && typeof doc.src === "string" ? doc.src : null,
+      }))
+      .filter((doc) => doc.kind !== "website" || doc.src);
+  }
+
+  async function loadAuthStatus() {
+    authState = await api("/api/auth/status");
+    updateAuthUi();
+    return authState;
+  }
+
+  function updateAuthUi() {
+    if (authSignedOut) authSignedOut.style.display = authState.authenticated ? "none" : "block";
+    if (authSignedIn) authSignedIn.style.display = authState.authenticated ? "block" : "none";
+    if (authEmailDisplay) authEmailDisplay.textContent = authState.email || "";
+  }
+
+  function scheduleWorkspaceSync() {
+    if (!authState.authenticated || hydratingWorkspace) return;
+    clearTimeout(workspaceSyncTimer);
+    workspaceSyncTimer = setTimeout(async () => {
+      try {
+        await api("/api/workspace-state", {
+          method: "POST",
+          body: JSON.stringify({
+            open_documents: openDocuments,
+            active_document_id: activeDocumentId,
+          }),
+        });
+      } catch (e) {
+        console.warn("Workspace sync failed:", e);
+      }
+    }, 250);
+  }
+
+  async function loadWorkspaceState() {
+    if (!authState.authenticated) return;
+    const remote = await api("/api/workspace-state");
+    const remoteDocuments = normalizeOpenDocumentsList(remote.open_documents || []);
+    const hasRemoteState = remoteDocuments.length > 0 || remote.active_document_id;
+
+    if (!hasRemoteState) {
+      scheduleWorkspaceSync();
+      return;
+    }
+
+    hydratingWorkspace = true;
+    openDocuments = remoteDocuments;
+    activeDocumentId = remote.active_document_id ? String(remote.active_document_id) : null;
+    localStorage.setItem("openDocuments", JSON.stringify(openDocuments));
+    if (activeDocumentId) localStorage.setItem("activeDocumentId", activeDocumentId);
+    else localStorage.removeItem("activeDocumentId");
+    hydratingWorkspace = false;
+  }
+
   function saveOpenDocuments() {
     localStorage.setItem("openDocuments", JSON.stringify(openDocuments));
     if (activeDocumentId) localStorage.setItem("activeDocumentId", activeDocumentId);
     else localStorage.removeItem("activeDocumentId");
+    scheduleWorkspaceSync();
   }
 
   function saveWebsiteLibrary() {
@@ -483,14 +561,9 @@
       }
       const iframe = view.querySelector(".reader-frame");
       const wantedSrc = doc.kind === "website"
-        ? (doc.src || "")
+        ? `/viewer?kind=website&id=${encodeURIComponent(doc.messageId)}&filename=${encodeURIComponent(doc.filename)}&src=${encodeURIComponent(doc.src || "")}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}`
         : `/viewer?id=${doc.messageId}&filename=${encodeURIComponent(doc.filename)}&ext=${encodeURIComponent(doc.ext || "")}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}`;
       if (doc.messageId === activeDocumentId && iframe && iframe.getAttribute("src") !== wantedSrc) {
-        if (doc.kind === "website") {
-          iframe.setAttribute("referrerpolicy", "no-referrer");
-        } else {
-          iframe.removeAttribute("referrerpolicy");
-        }
         iframe.setAttribute("src", wantedSrc);
       }
       view.classList.toggle("active", doc.messageId === activeDocumentId);
@@ -1367,9 +1440,17 @@
 
   async function refreshStatus() {
     const s = await api("/api/status");
+    if (s.auth) {
+      authState = {
+        authenticated: Boolean(s.auth.authenticated),
+        email: s.auth.email || null,
+      };
+      updateAuthUi();
+    }
     $("#status-cards").innerHTML = `
       <div class="card"><div class="value">${s.telegram_authorized ? "Yes" : "No"}</div><div class="label">Telegram authorized</div></div>
       <div class="card"><div class="value">${s.listening ? "On" : "Off"}</div><div class="label">Live listener</div></div>
+      <div class="card"><div class="value">${authState.authenticated ? "On" : "Off"}</div><div class="label">Account sync</div></div>
       <div class="card"><div class="value">${s.catalog_count}</div><div class="label">Indexed files</div></div>
       ${Object.entries(s.status_counts || {}).map(([k, v]) =>
         `<div class="card"><div class="value">${v}</div><div class="label">${k}</div></div>`
@@ -1412,6 +1493,62 @@
   $("#listen-stop-btn").addEventListener("click", async () => {
     await api("/api/listen/stop", { method: "POST" });
     refreshStatus();
+  });
+
+  // ---- Account ------------------------------------------------------------
+
+  $("#auth-request-code-btn")?.addEventListener("click", async () => {
+    const email = authEmailInput?.value.trim() || "";
+    if (!email) return;
+    authRequestMessage.textContent = "Generating code...";
+    authVerifyMessage.textContent = "";
+    try {
+      const response = await api("/api/auth/request_code", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+      pendingAuthEmail = email;
+      authCodeStep.style.display = "block";
+      if (response.delivery === "email") {
+        authRequestMessage.textContent = response.note || "Code sent. Check your inbox.";
+      } else {
+        authRequestMessage.textContent = response.preview_code
+          ? `Code: ${response.preview_code} (expires soon)`
+          : (response.note || "Code generated.");
+      }
+    } catch (e) {
+      authRequestMessage.textContent = e.message;
+    }
+  });
+
+  $("#auth-verify-code-btn")?.addEventListener("click", async () => {
+    const email = pendingAuthEmail || authEmailInput?.value.trim() || "";
+    const code = authCodeInput?.value.trim() || "";
+    if (!email || !code) return;
+    authVerifyMessage.textContent = "Signing in...";
+    try {
+      await api("/api/auth/verify_code", {
+        method: "POST",
+        body: JSON.stringify({ email, code }),
+      });
+      await loadAuthStatus();
+      await loadWorkspaceState();
+      syncReaderPane();
+      if (activeDocumentId && openDocuments.some((doc) => doc.messageId === activeDocumentId)) {
+        activateDocumentTab(activeDocumentId);
+      }
+      authRequestMessage.textContent = "";
+      authVerifyMessage.textContent = "";
+      authCodeInput.value = "";
+    } catch (e) {
+      authVerifyMessage.textContent = e.message;
+    }
+  });
+
+  $("#auth-logout-btn")?.addEventListener("click", async () => {
+    await api("/api/auth/logout", { method: "POST" });
+    authState = { authenticated: false, email: null };
+    updateAuthUi();
   });
 
   // ---- Telegram login ------------------------------------------------------
@@ -1736,20 +1873,31 @@
 
   // ---- Init ------------------------------------------------------------
 
-  loadCatalog();
-  loadTagFilters();
-  loadDownloadTagFilters();
-  loadCustomTabs();
-  renderChannelHistory();
-  updateDeleteTabButton();
-  if (activeDocumentId && openDocuments.some((doc) => doc.messageId === activeDocumentId)) {
-    syncReaderPane();
-    activateDocumentTab(activeDocumentId);
-  } else {
-    activeDocumentId = null;
-    activateAppTab(activeAppTab);
-    syncReaderPane();
-  }
-  refreshStatus();
-  pollHandle = setInterval(refreshStatus, 15000);
+  (async () => {
+    await loadAuthStatus().catch((e) => {
+      console.warn("Auth status unavailable:", e);
+    });
+    if (authState.authenticated) {
+      await loadWorkspaceState().catch((e) => {
+        console.warn("Workspace state unavailable:", e);
+      });
+    }
+
+    loadCatalog();
+    loadTagFilters();
+    loadDownloadTagFilters();
+    loadCustomTabs();
+    renderChannelHistory();
+    updateDeleteTabButton();
+    if (activeDocumentId && openDocuments.some((doc) => doc.messageId === activeDocumentId)) {
+      syncReaderPane();
+      activateDocumentTab(activeDocumentId);
+    } else {
+      activeDocumentId = null;
+      activateAppTab(activeAppTab);
+      syncReaderPane();
+    }
+    refreshStatus();
+    pollHandle = setInterval(refreshStatus, 15000);
+  })();
 })();
