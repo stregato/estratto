@@ -25,7 +25,12 @@ EPUBs, and comics in place. Designed to run well on a Raspberry Pi 4.
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+cp config.example.yaml config.local.yaml
 ```
+
+For local runs, keep non-secret settings in `config.local.yaml` and secrets in an untracked
+`.env` file if you use a shell loader such as `direnv`, `dotenvx`, or your deployment
+system. Do not put real credentials into tracked files.
 
 ### 2. Telegram API ID/hash — usually nothing to do here
 
@@ -53,19 +58,19 @@ Either way this creates a `<session_name>.session` file (name set by `telegram.s
 in config) in the working directory — **keep this file secret**, it's equivalent to being
 logged into your Telegram account. Subsequent runs reuse it without prompting.
 
-### 4. Fill in the rest of `config.yaml`
+### 4. Fill in the rest of your local config file
 
 **You need to edit these before running — they're placeholders:**
 - `telegram.channel` — the channel username, `t.me/...` link, or numeric chat ID to watch
 - `libraries.*.root` — actual filesystem paths Kavita is configured to scan
 - `kavita.library_ids` — real library IDs from step 4
-- `openai.api_key` / `openai.enabled` — only needed if you want LLM classification
+- `openai.enabled` — only needed if you want LLM classification
 
 The `filename_patterns` and path `template`s are reasonable defaults per the spec, but
 adjust them if your filenames or desired folder structure differ. All of this can also be
-edited from the web UI's Configuration tab, which saves back to `config.yaml` (preserving
-the file's comments). Changes to `telegram.*`, `staging.*`, or `db.path` need a service
-restart to take effect; everything else is picked up on the next action.
+edited from the web UI's Configuration tab, which saves back to the active config file
+(preserving comments where possible). Changes to `telegram.*`, `staging.*`, or `db.path`
+need a service restart to take effect; everything else is picked up on the next action.
 
 ### 5. Optional: configure SMTP for email sign-in
 
@@ -82,20 +87,21 @@ MAIL_FROM="Estratto <login@example.com>"
 EMAIL_CODE_TTL_MINUTES=15
 ```
 
-You can also put the same values under `mail.*` and `auth.email_code_ttl_minutes` in
-`config.yaml`. If SMTP is not configured, Estratto falls back to showing the generated
-code directly in the Account tab for local development.
+You can also put the same values under `mail.*` and `auth.email_code_ttl_minutes` in your
+local config file, but that is weaker operationally. Prefer `.env` for secrets. If SMTP is
+not configured, Estratto falls back to showing the generated code directly in the Account
+tab for local development.
 
 ### 6. Run it
 
 ```bash
 # Web UI: browse the channel, pick files to download, configure everything, watch status
-python -m estratto.main web
+python -m estratto.main -c config.local.yaml web
 # then open http://<host>:8000 (bind address/port set by config.yaml's `web` section)
 
 # CLI, headless, no UI:
-python -m estratto.main backfill   # one-time: process the channel's full history
-python -m estratto.main listen     # long-running: react to new messages as they arrive
+python -m estratto.main -c config.local.yaml backfill   # one-time: process the channel's full history
+python -m estratto.main -c config.local.yaml listen     # long-running: react to new messages as they arrive
 ```
 
 All subcommands accept `-c /path/to/config.yaml` if you keep config outside the working
@@ -115,11 +121,16 @@ git clone <your-fork-or-copy-of-this-repo> ~/estratto
 cd ~/estratto
 sudo mkdir -p /var/estratto
 sudo chown -R $USER:$USER /var/estratto
+cp config.example.yaml /var/estratto/config.yaml
+cp .env.example .env
+# edit /var/estratto/config.yaml for non-secrets
+# edit .env for secrets
 docker compose up --build -d
 ```
 
-On first start the container copies the bundled `config.yaml` to
-`/var/estratto/config.yaml`. Edit that file with your real values, then restart:
+On first start, the container will create `/var/estratto/config.yaml` from the bundled
+`config.example.yaml` if it does not exist yet. Edit that file for non-secret settings.
+Keep real credentials in the untracked project `.env` file loaded by Compose. Then restart:
 
 ```bash
 docker compose restart

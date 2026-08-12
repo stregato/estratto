@@ -51,7 +51,7 @@ class Config:
         path = Path(path).expanduser() if path else default_config_path()
         if not path.exists():
             raise FileNotFoundError(
-                f"Config file not found: {path}. Copy config.yaml and fill in your values."
+                f"Config file not found: {path}. Copy config.example.yaml to a local config file and fill in your non-secret values."
             )
         with open(path, "r", encoding="utf-8") as f:
             raw = _yaml.load(f) or {}

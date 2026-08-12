@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY estratto /app/estratto
 COPY web /app/web
-COPY config.yaml /app/config.yaml
+COPY config.example.yaml /app/config.example.yaml
 COPY docker/docker-entrypoint.sh /usr/local/bin/estratto-entrypoint
 
 RUN chmod +x /usr/local/bin/estratto-entrypoint

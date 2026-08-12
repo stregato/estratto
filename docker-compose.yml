@@ -2,6 +2,8 @@ services:
   estratto:
     build: .
     image: estratto:latest
+    env_file:
+      - ./.env
     ports:
       - "8001:8001"
     volumes:
