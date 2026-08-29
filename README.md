@@ -62,8 +62,7 @@ logged into your Telegram account. Subsequent runs reuse it without prompting.
 
 **You need to edit these before running — they're placeholders:**
 - `telegram.channel` — the channel username, `t.me/...` link, or numeric chat ID to watch
-- `libraries.*.root` — actual filesystem paths Kavita is configured to scan
-- `kavita.library_ids` — real library IDs from step 4
+- `libraries.*.root` — actual filesystem paths where Estratto should place sorted files
 - `openai.enabled` — only needed if you want LLM classification
 
 The `filename_patterns` and path `template`s are reasonable defaults per the spec, but
@@ -72,27 +71,7 @@ edited from the web UI's Configuration tab, which saves back to the active confi
 (preserving comments where possible). Changes to `telegram.*`, `staging.*`, or `db.path`
 need a service restart to take effect; everything else is picked up on the next action.
 
-### 5. Optional: configure SMTP for email sign-in
-
-Estratto's Account tab can send real sign-in codes by email when SMTP is configured. It
-uses the same variable names as Appunto:
-
-```bash
-MAIL_HOST=smtp.example.com
-MAIL_PORT=465
-MAIL_SECURE=true
-MAIL_USER=login@example.com
-MAIL_PASS=replace_me
-MAIL_FROM="Estratto <login@example.com>"
-EMAIL_CODE_TTL_MINUTES=15
-```
-
-You can also put the same values under `mail.*` and `auth.email_code_ttl_minutes` in your
-local config file, but that is weaker operationally. Prefer `.env` for secrets. If SMTP is
-not configured, Estratto falls back to showing the generated code directly in the Account
-tab for local development.
-
-### 6. Run it
+### 5. Run it
 
 ```bash
 # Web UI: browse the channel, pick files to download, configure everything, watch status
@@ -136,7 +115,10 @@ Keep real credentials in the untracked project `.env` file loaded by Compose. Th
 docker compose restart
 ```
 
-Open `http://<pi-ip>:8001`, then use the Telegram source screen to log in and index files.
+Open `http://<pi-ip>:8001`, then choose a profile name of at least 17 characters. Estratto
+uses the raw profile text as key material for encrypted-at-rest profile data, while the
+SHA-256 hash of that profile becomes the storage binding under `/data/profiles/<hash>/`.
+After that, use the Telegram source screen to log in and index files.
 
 ### What persists
 
@@ -230,7 +212,7 @@ sometimes fails on a Pi 4's limited RAM.
 ```bash
 git clone <your-fork-or-copy-of-this-repo> ~/estratto
 cd ~/estratto
-cp config.yaml config.yaml   # edit config.yaml with your values first, or do it via the web UI later
+cp config.example.yaml config.yaml   # edit config.yaml with your values first, or do it via the web UI later
 bash deploy/install.sh web   # or: bash deploy/install.sh listen  for the headless-only unit
 sudo systemctl start estratto-web.service
 sudo journalctl -u estratto-web.service -f
@@ -257,8 +239,6 @@ PyMuPDF/pypdf parsing big PDFs, which is I/O- and single-core-bound on a Pi 4 bu
 - Files that fail metadata parsing, LLM classification (low confidence or errors), or
   sorting (missing required fields for the template) are moved to `needs-review/` and
   logged with a reason — never guessed into a wrong path.
-- Kavita scan calls retry with backoff; if Kavita is unreachable, sorted files stay safely
-  on disk and the scan is retried on the next debounce cycle rather than being dropped.
 
 ## Project layout
 
@@ -272,7 +252,6 @@ estratto/
     metadata.py           # EPUB/PDF/filename parsing
     classifier.py         # OpenAI content classification
     sorter.py              # path resolution + file moves
-    kavita_client.py       # auth + scan trigger
     db.py                  # SQLite state tracking + channel catalog
     webapp.py               # FastAPI backend for the web UI
     main.py                 # CLI entrypoint: backfill / listen / web

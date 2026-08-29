@@ -1,5 +1,5 @@
-"""FastAPI web UI: browse/search the channel catalog, download files on demand, configure
-Telegram/Kavita/OpenAI settings, and drive the Telegram login flow (phone/code/2FA) from a browser.
+"""FastAPI web UI: browse/search the catalog, download files on demand, configure
+Telegram/OpenAI settings, and drive the Telegram login flow (phone/code/2FA) from a browser.
 
 Runs the Telethon client inside the same asyncio event loop as the web server, so indexing,
 on-demand downloads, and the optional background listener all share one connection.
@@ -7,18 +7,16 @@ on-demand downloads, and the optional background listener all share one connecti
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import re
-import secrets
 import shutil
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
-from fastapi import Cookie, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -27,19 +25,24 @@ import requests
 
 from . import arxiv_client
 from . import db as db_module
-from . import mail as mail_module
 from . import tagger
 from .config import Config
-from .kavita_client import KavitaClient
-from .main import Pipeline, _build_kavita_client, setup_logging
+from .main import Pipeline, setup_logging
 from .paths import static_dir
+from .profiles import (
+    PROFILE_HASH_HEADER,
+    PROFILE_HEADER,
+    PROFILE_MIN_LENGTH,
+    ProfileError,
+    ProfileStore,
+    normalize_profile_name,
+    profile_hash,
+)
 from .telegram_client import EstrattoTelegramClient
 
 logger = logging.getLogger("estratto.web")
 
 STATIC_DIR = static_dir()
-SESSION_COOKIE_NAME = "estratto_session"
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _resolve_config_relative_path(base_dir: Path, raw_path: Optional[str]) -> Optional[Path]:
@@ -70,7 +73,7 @@ def _candidate_file_locations(cfg: Config, record: Optional[db_module.FileRecord
 
 def _find_existing_file(cfg: Config, record: Optional[db_module.FileRecord], message_id: int) -> Optional[Path]:
     for candidate in _candidate_file_locations(cfg, record, message_id):
-        if candidate.exists() and candidate.is_file():
+        if candidate.exists():
             return candidate
     return None
 
@@ -148,27 +151,64 @@ def _public_message_id(message_id: int) -> str:
     return str(message_id)
 
 
+class ProfileConfigView:
+    def __init__(self, base_cfg: Config, settings: dict[str, Any], store: ProfileStore):
+        self.base_cfg = base_cfg
+        self.settings = settings
+        self.store = store
+
+    def get(self, *keys: str, default: Any = None) -> Any:
+        node: Any = self.settings
+        for key in keys:
+            if not isinstance(node, dict) or key not in node:
+                return self.base_cfg.get(*keys, default=default)
+            node = node[key]
+        return node
+
+    @property
+    def path(self) -> Path:
+        return self.base_cfg.path
+
+    @property
+    def staging_dir(self) -> Path:
+        return self.store.temp_dir
+
+    @property
+    def needs_review_dir(self) -> Path:
+        return self.store.root_dir / "needs-review"
+
+    @property
+    def allowed_extensions(self) -> set[str]:
+        return self.base_cfg.allowed_extensions
+
+    @property
+    def openai_enabled(self) -> bool:
+        return bool(self.get("openai", "enabled", default=self.base_cfg.openai_enabled))
+
+
+@dataclass
+class ProfileRuntime:
+    store: ProfileStore
+    db: db_module.Database
+    settings: dict[str, Any]
+    pipeline: Pipeline
+    telegram_client: Optional[EstrattoTelegramClient] = None
+    login_phone: Optional[str] = None
+    index_progress: int = 0
+    indexing: bool = False
+    arxiv_downloading: set[int] = field(default_factory=set)
+    telegram_downloading: set[int] = field(default_factory=set)
+    listen_task: Optional[asyncio.Task] = None
+
+    @property
+    def profile_hash(self) -> str:
+        return self.store.hash
+
+
 class AppState:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.db = db_module.Database(cfg.db_path)
-        self.kavita: Optional[KavitaClient] = _build_kavita_client(cfg)
-        self.pipeline = Pipeline(cfg, self.db, self.kavita)
-        self.telegram = EstrattoTelegramClient(
-            api_id=int(cfg.get("telegram", "api_id")),
-            api_hash=str(cfg.get("telegram", "api_hash")),
-            session_name=cfg.telegram_session_name,
-            channel=str(cfg.get("telegram", "channel")),
-            staging_dir=cfg.staging_dir,
-            allowed_extensions=cfg.allowed_extensions,
-        )
-        self.login_phone: Optional[str] = None
-        self.indexing = False
-        self.index_progress = 0
-        self.arxiv_downloading: set[int] = set()
-        self.telegram_downloading: set[int] = set()
-        self.listen_task: Optional[asyncio.Task] = None
-        self.scan_flush_task: Optional[asyncio.Task] = None
+        self.profile_runtimes: dict[str, ProfileRuntime] = {}
         self.background_tasks: set[asyncio.Task] = set()
 
     def spawn(self, coro) -> asyncio.Task:
@@ -177,22 +217,99 @@ class AppState:
         task.add_done_callback(self.background_tasks.discard)
         return task
 
-    async def rebuild_telegram_client(self) -> None:
-        """Recreate the Telethon client from current config (after api_id/hash/session/channel
-        change) and reconnect, so the guided login flow works without a service restart."""
-        if self.listen_task:
-            self.listen_task.cancel()
-            self.listen_task = None
-        await self.telegram.stop()
-        self.telegram = EstrattoTelegramClient(
-            api_id=int(self.cfg.get("telegram", "api_id")),
-            api_hash=str(self.cfg.get("telegram", "api_hash")),
-            session_name=self.cfg.telegram_session_name,
-            channel=str(self.cfg.get("telegram", "channel")),
-            staging_dir=self.cfg.staging_dir,
-            allowed_extensions=self.cfg.allowed_extensions,
+    def runtime_for_profile(self, profile_name: str) -> ProfileRuntime:
+        store = ProfileStore.from_profile(self.cfg.path.parent.resolve(), profile_name)
+        runtime = self.profile_runtimes.get(store.hash)
+        if runtime is not None:
+            runtime.settings = store.load_settings(profile_name)
+            runtime.pipeline.cfg = ProfileConfigView(self.cfg, runtime.settings, store)
+            return runtime
+
+        settings = store.load_settings(profile_name)
+        db = db_module.Database(store.db_path)
+        profile_cfg = ProfileConfigView(self.cfg, settings, store)
+        runtime = ProfileRuntime(
+            store=store,
+            db=db,
+            settings=settings,
+            pipeline=Pipeline(profile_cfg, db),
         )
-        await self.telegram.connect()
+        self.profile_runtimes[store.hash] = runtime
+        return runtime
+
+    def runtime_for_hash(self, profile_hash_value: str) -> ProfileRuntime:
+        store = ProfileStore(self.cfg.path.parent.resolve(), profile_hash_value)
+        runtime = self.profile_runtimes.get(store.hash)
+        if runtime is not None:
+            return runtime
+        db = db_module.Database(store.db_path)
+        runtime = ProfileRuntime(
+            store=store,
+            db=db,
+            settings={},
+            pipeline=Pipeline(ProfileConfigView(self.cfg, {}, store), db),
+        )
+        self.profile_runtimes[store.hash] = runtime
+        return runtime
+
+    def save_settings(self, runtime: ProfileRuntime, profile_name: str) -> None:
+        runtime.store.save_settings(profile_name, runtime.settings)
+        runtime.pipeline.cfg = ProfileConfigView(self.cfg, runtime.settings, runtime.store)
+
+    def telegram_settings(self, runtime: ProfileRuntime) -> dict:
+        row = runtime.settings.get("telegram") or {}
+        return {
+            "api_id": str(row.get("api_id") or self.cfg.get("telegram", "api_id", default="")).strip(),
+            "api_hash": str(row.get("api_hash") or self.cfg.get("telegram", "api_hash", default="")).strip(),
+            "channel": str(row.get("channel") or self.cfg.get("telegram", "channel", default="")).strip(),
+        }
+
+    def telegram_app_configured(self, runtime: ProfileRuntime) -> bool:
+        settings = self.telegram_settings(runtime)
+        return bool(settings["api_id"]) and bool(settings["api_hash"]) and "YOUR_" not in settings["api_hash"]
+
+    async def get_telegram_client(self, runtime: ProfileRuntime, *, rebuild: bool = False) -> EstrattoTelegramClient:
+        settings = self.telegram_settings(runtime)
+        if not self.telegram_app_configured(runtime):
+            raise HTTPException(400, "Telegram app credentials are not configured for this profile")
+
+        if rebuild:
+            await self.stop_telegram_client(runtime)
+
+        client = runtime.telegram_client
+        if client is None:
+            client = EstrattoTelegramClient(
+                api_id=int(settings["api_id"]),
+                api_hash=settings["api_hash"],
+                session_name=runtime.store.telegram_session_name(),
+                channel=settings["channel"],
+                staging_dir=runtime.store.temp_dir,
+                allowed_extensions=self.cfg.allowed_extensions,
+            )
+            runtime.telegram_client = client
+        await client.connect()
+        return client
+
+    async def stop_telegram_client(self, runtime: ProfileRuntime) -> None:
+        task = runtime.listen_task
+        runtime.listen_task = None
+        if task:
+            task.cancel()
+        client = runtime.telegram_client
+        runtime.telegram_client = None
+        if client is not None:
+            await client.stop()
+
+    async def stop_all_telegram_clients(self) -> None:
+        for runtime in list(self.profile_runtimes.values()):
+            if runtime.listen_task:
+                runtime.listen_task.cancel()
+                runtime.listen_task = None
+            if runtime.telegram_client is not None:
+                client = runtime.telegram_client
+                runtime.telegram_client = None
+                await client.stop()
+            runtime.db.close()
 
 
 class PhoneBody(BaseModel):
@@ -210,15 +327,6 @@ class PasswordBody(BaseModel):
 class AppKeysBody(BaseModel):
     api_id: str
     api_hash: str
-
-
-class EmailCodeRequestBody(BaseModel):
-    email: str
-
-
-class EmailCodeVerifyBody(BaseModel):
-    email: str
-    code: str
 
 
 class WorkspaceStateBody(BaseModel):
@@ -251,21 +359,11 @@ async def lifespan(app: FastAPI):
     cfg = Config.load(app.state.config_path)
     setup_logging(cfg)
     state = AppState(cfg)
-    await state.telegram.connect()
-    debounce_seconds = int(cfg.get("kavita", "scan_debounce_seconds", default=60))
-    state.scan_flush_task = asyncio.create_task(
-        state.pipeline.scan_debounce_loop(debounce_seconds)
-    )
     logger.info("Estratto web UI ready")
     try:
         yield
     finally:
-        if state.listen_task:
-            state.listen_task.cancel()
-        if state.scan_flush_task:
-            state.scan_flush_task.cancel()
-        await state.telegram.stop()
-        state.db.close()
+        await state.stop_all_telegram_clients()
 
 
 def create_app(config_path: str = None) -> FastAPI:
@@ -278,211 +376,187 @@ def create_app(config_path: str = None) -> FastAPI:
     def _utcnow() -> datetime:
         return datetime.now(timezone.utc)
 
-    def _normalize_email(raw: str) -> str:
-        email = raw.strip().lower()
-        if not EMAIL_RE.match(email):
-            raise HTTPException(400, "Enter a valid email address")
-        return email
+    def _settings_section(runtime: ProfileRuntime, key: str) -> dict[str, Any]:
+        value = runtime.settings.get(key)
+        if not isinstance(value, dict):
+            value = {}
+            runtime.settings[key] = value
+        return value
 
-    def _hash_secret(value: str) -> str:
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    def _merge_nested(dst: dict[str, Any], src: dict[str, Any]) -> None:
+        for key, value in src.items():
+            if isinstance(value, dict) and isinstance(dst.get(key), dict):
+                _merge_nested(dst[key], value)
+            else:
+                dst[key] = value
 
-    def _session_cookie_kwargs(expires_at: datetime) -> dict:
-        return {
-            "key": SESSION_COOKIE_NAME,
-            "expires": expires_at,
-            "httponly": True,
-            "samesite": "lax",
-            "secure": False,
-            "path": "/",
-        }
+    def _profile_name_from_request(request: Request) -> str:
+        if hasattr(request.state, "profile_name"):
+            return request.state.profile_name
+        raw_profile = request.headers.get(PROFILE_HEADER, "")
+        if not raw_profile.strip():
+            raise HTTPException(428, f"Profile required in {PROFILE_HEADER}")
+        try:
+            normalized = normalize_profile_name(raw_profile)
+        except ProfileError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        request.state.profile_name = normalized
+        return normalized
 
-    def _current_user(session_token: Optional[str]) -> Optional[dict]:
-        if not session_token:
-            return None
-        return state.db.get_user_by_session(_hash_secret(session_token), _utcnow().isoformat())
+    def _profile_hash_from_request(request: Request) -> str:
+        raw_hash = request.headers.get(PROFILE_HASH_HEADER, "").strip()
+        if raw_hash:
+            if len(raw_hash) != 64 or any(ch not in "0123456789abcdef" for ch in raw_hash.lower()):
+                raise HTTPException(400, f"Invalid {PROFILE_HASH_HEADER} value")
+            return raw_hash
+        return profile_hash(_profile_name_from_request(request))
 
-    def _require_user(session_token: Optional[str]) -> dict:
-        user = _current_user(session_token)
-        if not user:
-            raise HTTPException(401, "Sign in first")
-        return user
+    def _require_runtime(request: Request) -> ProfileRuntime:
+        try:
+            return state.runtime_for_profile(_profile_name_from_request(request))
+        except ProfileError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    def _finalize_download(runtime: ProfileRuntime, profile_name: str, stored_name: str, source_path: Path) -> str:
+        encrypted_path = runtime.store.encrypt_file(
+            profile_name,
+            source_path,
+            stored_name,
+            chunk_size=state.cfg.encryption_chunk_size,
+        )
+        if source_path.exists():
+            source_path.unlink()
+        return str(encrypted_path)
+
+    def _runtime_for_chunk_request(request: Request) -> ProfileRuntime:
+        raw_hash = _profile_hash_from_request(request)
+        try:
+            return state.runtime_for_hash(raw_hash)
+        except Exception as exc:
+            raise HTTPException(400, f"Invalid profile hash: {exc}") from exc
+
+    def _document_state_payload(runtime: ProfileRuntime, document_id: str) -> Optional[dict[str, Any]]:
+        documents = _settings_section(runtime, "documents")
+        payload = documents.get(document_id)
+        return payload if isinstance(payload, dict) else None
 
     # ---- Status -----------------------------------------------------------
 
     @app.get("/api/status")
-    async def status(estratto_session: Optional[str] = Cookie(default=None)):
-        authorized = await state.telegram.is_authorized()
-        api_id = str(state.cfg.get("telegram", "api_id", default=""))
-        api_hash = str(state.cfg.get("telegram", "api_hash", default=""))
-        user = _current_user(estratto_session)
+    async def status(request: Request):
+        runtime = _require_runtime(request)
+        authorized = False
+        app_configured = state.telegram_app_configured(runtime)
+        settings = state.telegram_settings(runtime)
+        listening = runtime.listen_task is not None and not runtime.listen_task.done()
+        if app_configured:
+            try:
+                authorized = await (await state.get_telegram_client(runtime)).is_authorized()
+            except Exception:
+                authorized = False
         return {
             "telegram_authorized": authorized,
-            "telegram_app_configured": bool(api_id) and bool(api_hash) and "YOUR_" not in api_hash,
-            "listening": state.listen_task is not None and not state.listen_task.done(),
-            "indexing": state.indexing,
-            "index_progress": state.index_progress,
-            "catalog_count": state.db.catalog_count(),
-            "status_counts": state.db.status_counts(),
-            "kavita_configured": state.kavita is not None,
-            "openai_enabled": state.cfg.openai_enabled,
-            "channel": state.cfg.get("telegram", "channel", default=""),
-            "auth": {
-                "authenticated": bool(user),
-                "email": user["email"] if user else None,
+            "telegram_app_configured": app_configured,
+            "listening": listening,
+            "indexing": runtime.indexing,
+            "index_progress": runtime.index_progress,
+            "catalog_count": runtime.db.catalog_count(),
+            "status_counts": runtime.db.status_counts(),
+            "openai_enabled": runtime.pipeline.cfg.openai_enabled,
+            "channel": settings["channel"],
+            "profile": {
+                "hash": runtime.profile_hash,
+                "min_length": PROFILE_MIN_LENGTH,
             },
         }
 
-    # ---- Email auth --------------------------------------------------------
-
-    @app.get("/api/auth/status")
-    async def auth_status(estratto_session: Optional[str] = Cookie(default=None)):
-        user = _current_user(estratto_session)
+    @app.get("/api/profile/status")
+    async def profile_status(request: Request):
+        runtime = _require_runtime(request)
         return {
-            "authenticated": bool(user),
-            "email": user["email"] if user else None,
+            "profile_hash": runtime.profile_hash,
+            "min_length": PROFILE_MIN_LENGTH,
         }
 
-    @app.post("/api/auth/request_code")
-    async def request_auth_code(body: EmailCodeRequestBody):
-        email = _normalize_email(body.email)
-        code = f"{secrets.randbelow(1000000):06d}"
-        expires_at = _utcnow() + timedelta(minutes=state.cfg.email_code_ttl_minutes)
-        state.db.create_email_login_code(email, _hash_secret(code), expires_at.isoformat())
-        state.db.prune_expired_email_login_codes(_utcnow().isoformat())
-        logger.info("Generated Estratto email login code for %s", email)
-
-        if mail_module.is_mail_configured(state.cfg):
-            text = "\n".join([
-                f"Your Estratto sign-in code is {code}.",
-                "",
-                f"It expires in {state.cfg.email_code_ttl_minutes} minutes.",
-                "If you did not request this code, you can ignore this email.",
-            ])
-            try:
-                await asyncio.to_thread(
-                    mail_module.send_email,
-                    state.cfg,
-                    to=email,
-                    subject="Your Estratto code",
-                    text=text,
-                )
-            except Exception as exc:
-                logger.exception("Could not send auth email to %s", email)
-                raise HTTPException(502, f"Could not send email: {exc}") from exc
-            return {
-                "status": "code_sent",
-                "delivery": "email",
-                "expires_at": expires_at.isoformat(),
-                "note": "Check your inbox for the sign-in code.",
-            }
-
-        logger.info("SMTP not configured; falling back to preview code for %s: %s", email, code)
+    @app.post("/api/profile/validate")
+    async def validate_profile(data: dict):
+        raw_profile = str(data.get("profile", ""))
+        normalized = normalize_profile_name(raw_profile)
         return {
-            "status": "code_generated",
-            "delivery": "preview",
-            "preview_code": code,
-            "expires_at": expires_at.isoformat(),
-            "note": "SMTP is not configured on this server. Use the generated code shown here.",
+            "status": "ok",
+            "profile_hash": profile_hash(normalized),
+            "min_length": PROFILE_MIN_LENGTH,
         }
-
-    @app.post("/api/auth/verify_code")
-    async def verify_auth_code(
-        body: EmailCodeVerifyBody,
-        response: Response,
-    ):
-        email = _normalize_email(body.email)
-        code = body.code.strip()
-        if not code:
-            raise HTTPException(400, "Enter the code")
-
-        now = _utcnow()
-        matched = state.db.consume_email_login_code(email, _hash_secret(code), now.isoformat())
-        if not matched:
-            raise HTTPException(400, "Invalid or expired code")
-
-        user = state.db.create_or_update_user(email, last_login_at=now.isoformat())
-        session_token = secrets.token_urlsafe(32)
-        expires_at = now + timedelta(days=30)
-        state.db.create_user_session(user["id"], _hash_secret(session_token), expires_at.isoformat())
-        response.set_cookie(value=session_token, **_session_cookie_kwargs(expires_at))
-        return {
-            "status": "authenticated",
-            "email": user["email"],
-            "expires_at": expires_at.isoformat(),
-        }
-
-    @app.post("/api/auth/logout")
-    async def auth_logout(
-        response: Response,
-        estratto_session: Optional[str] = Cookie(default=None),
-    ):
-        if estratto_session:
-            state.db.delete_user_session(_hash_secret(estratto_session))
-        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
-        return {"status": "logged_out"}
 
     @app.get("/api/recent")
-    async def recent(limit: int = 50):
-        return [r.__dict__ for r in state.db.recent_files(limit)]
+    async def recent(request: Request, limit: int = 50):
+        runtime = _require_runtime(request)
+        return [r.__dict__ for r in runtime.db.recent_files(limit)]
 
     # ---- Telegram login -----------------------------------------------------
 
     @app.post("/api/telegram/set_app_keys")
-    async def set_app_keys(body: AppKeysBody):
-        """Save the Telegram app's API ID/Hash and reconnect immediately, so the guided
-        login flow (keys -> phone -> code -> 2FA) works in one pass without a restart."""
+    async def set_app_keys(body: AppKeysBody, request: Request):
+        runtime = _require_runtime(request)
+        profile_name = _profile_name_from_request(request)
         api_id = body.api_id.strip()
         api_hash = body.api_hash.strip()
         if not api_id.isdigit() or not api_hash:
             raise HTTPException(400, "API ID must be numeric and API Hash must not be empty")
-        state.cfg.set("telegram", "api_id", int(api_id))
-        state.cfg.set("telegram", "api_hash", api_hash)
-        state.cfg.save()
+        telegram_settings = _settings_section(runtime, "telegram")
+        telegram_settings.update({"api_id": api_id, "api_hash": api_hash})
+        state.save_settings(runtime, profile_name)
         try:
-            await state.rebuild_telegram_client()
+            await state.get_telegram_client(runtime, rebuild=True)
         except Exception as exc:
             raise HTTPException(400, f"Could not connect with these keys: {exc}") from exc
         return {"status": "saved"}
 
     @app.post("/api/telegram/send_code")
-    async def send_code(body: PhoneBody):
+    async def send_code(body: PhoneBody, request: Request):
+        runtime = _require_runtime(request)
         try:
-            await state.telegram.send_code(body.phone)
+            await (await state.get_telegram_client(runtime)).send_code(body.phone)
         except Exception as exc:
             raise HTTPException(400, f"Failed to send code: {exc}") from exc
-        state.login_phone = body.phone
+        runtime.login_phone = body.phone
         return {"status": "code_sent"}
 
     @app.post("/api/telegram/verify_code")
-    async def verify_code(body: CodeBody):
-        if not state.login_phone:
+    async def verify_code(body: CodeBody, request: Request):
+        runtime = _require_runtime(request)
+        login_phone = runtime.login_phone
+        if not login_phone:
             raise HTTPException(400, "Call send_code first")
         try:
-            result = await state.telegram.sign_in_code(state.login_phone, body.code)
+            result = await (await state.get_telegram_client(runtime)).sign_in_code(login_phone, body.code)
         except Exception as exc:
             raise HTTPException(400, f"Login failed: {exc}") from exc
         return {"status": result}
 
     @app.post("/api/telegram/verify_password")
-    async def verify_password(body: PasswordBody):
+    async def verify_password(body: PasswordBody, request: Request):
+        runtime = _require_runtime(request)
         try:
-            await state.telegram.sign_in_password(body.password)
+            await (await state.get_telegram_client(runtime)).sign_in_password(body.password)
         except Exception as exc:
             raise HTTPException(400, f"2FA login failed: {exc}") from exc
         return {"status": "logged_in"}
 
     @app.post("/api/telegram/logout")
-    async def logout():
-        await state.telegram.log_out()
-        state.login_phone = None
-        await state.rebuild_telegram_client()
+    async def logout(request: Request):
+        runtime = _require_runtime(request)
+        client = await state.get_telegram_client(runtime)
+        await client.log_out()
+        runtime.login_phone = None
+        await state.get_telegram_client(runtime, rebuild=True)
         return {"status": "logged_out"}
 
     # ---- Catalog / indexing -------------------------------------------------
 
     @app.get("/api/catalog")
     async def catalog(
+        request: Request,
         search: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
@@ -490,8 +564,9 @@ def create_app(config_path: str = None) -> FastAPI:
         search_any: Optional[str] = None,
         source: Optional[str] = None,
     ):
+        runtime = _require_runtime(request)
         search_any_terms = [term.strip() for term in (search_any or "").split(",") if term.strip()]
-        items = state.db.catalog(
+        items = runtime.db.catalog(
             search=search,
             limit=limit,
             offset=offset,
@@ -501,14 +576,14 @@ def create_app(config_path: str = None) -> FastAPI:
         )
 
         for item in items:
-            if source == "telegram" and item["message_id"] in state.telegram_downloading:
+            if source == "telegram" and item["message_id"] in runtime.telegram_downloading:
                 item["status"] = "downloading"
             item["message_id"] = _public_message_id(item["message_id"])
             item["file_exists"] = bool(item.get("status"))
 
         return {
             "items": items,
-            "total": state.db.catalog_count(
+            "total": runtime.db.catalog_count(
                 search=search,
                 downloaded_only=downloaded_only,
                 search_any=search_any_terms,
@@ -516,13 +591,15 @@ def create_app(config_path: str = None) -> FastAPI:
             ),
         }
 
-    async def _run_index():
-        state.indexing = True
-        state.index_progress = 0
+    async def _run_index(runtime: ProfileRuntime):
+        runtime.indexing = True
+        runtime.index_progress = 0
         try:
+            telegram = await state.get_telegram_client(runtime)
+
             def on_message(message, filename):
                 caption = message.message or None
-                state.db.upsert_catalog_entry(
+                runtime.db.upsert_catalog_entry(
                     message_id=message.id,
                     filename=filename,
                     caption=caption,
@@ -531,55 +608,65 @@ def create_app(config_path: str = None) -> FastAPI:
                     ext=Path(filename).suffix.lower(),
                     source="telegram",
                 )
-                state.index_progress += 1
+                runtime.index_progress += 1
 
-            last_message_id = state.db.last_indexed_message_id(source="telegram") or 0
-            await state.telegram.index_channel(on_message, min_id=last_message_id)
+            last_message_id = runtime.db.last_indexed_message_id(source="telegram") or 0
+            await telegram.index_channel(on_message, min_id=last_message_id)
         except Exception:
             logger.exception("Indexing failed")
         finally:
-            state.indexing = False
+            runtime.indexing = False
 
     @app.post("/api/index")
-    async def start_index():
-        if not await state.telegram.is_authorized():
+    async def start_index(request: Request):
+        runtime = _require_runtime(request)
+        telegram = await state.get_telegram_client(runtime)
+        if not await telegram.is_authorized():
             raise HTTPException(400, "Log in to Telegram first")
-        if state.indexing:
+        if runtime.indexing:
             return {"status": "already_running"}
-        state.spawn(_run_index())
+        state.spawn(_run_index(runtime))
         return {"status": "started"}
 
     # ---- On-demand download --------------------------------------------------
 
-    async def _run_download(message_id: int):
+    async def _run_download(runtime: ProfileRuntime, profile_name: str, message_id: int):
         try:
-            message, path, caption = await state.telegram.download_by_message_id(message_id)
-            await state.pipeline.process_file(message, path, caption)
+            telegram = await state.get_telegram_client(runtime)
+            message, path, caption = await telegram.download_by_message_id(message_id)
+            original_name = path.name
+            encrypted_path = _finalize_download(runtime, profile_name, original_name, path)
+            runtime.db.mark_downloaded(message.id, str(message.chat_id), original_name, encrypted_path)
         except Exception as exc:
             logger.exception("Download/process failed for message %s", message_id)
-            state.db.mark_failed(message_id, str(exc))
+            runtime.db.mark_failed(message_id, str(exc))
         finally:
-            state.telegram_downloading.discard(message_id)
+            runtime.telegram_downloading.discard(message_id)
 
     @app.post("/api/download/{message_id}")
-    async def download(message_id: int):
-        if not await state.telegram.is_authorized():
+    async def download(message_id: int, request: Request):
+        runtime = _require_runtime(request)
+        profile_name = _profile_name_from_request(request)
+        telegram = await state.get_telegram_client(runtime)
+        downloading = runtime.telegram_downloading
+        if not await telegram.is_authorized():
             raise HTTPException(400, "Log in to Telegram first")
-        if message_id in state.telegram_downloading:
+        if message_id in downloading:
             return {"status": "already_running"}
-        status_now = state.db.get_status(message_id)
+        status_now = runtime.db.get_status(message_id)
         if status_now in (
             db_module.STATUS_SORTED,
             db_module.STATUS_SCANNED,
             db_module.STATUS_NEEDS_REVIEW,
         ):
             return {"status": "already_processed", "current_status": status_now}
-        state.telegram_downloading.add(message_id)
-        state.spawn(_run_download(message_id))
+        downloading.add(message_id)
+        state.spawn(_run_download(runtime, profile_name, message_id))
         return {"status": "started"}
 
     @app.get("/api/arxiv/search")
-    async def arxiv_search(q: str = "", category: str = "", limit: int = 25, offset: int = 0):
+    async def arxiv_search(request: Request, q: str = "", category: str = "", limit: int = 25, offset: int = 0):
+        runtime = _require_runtime(request)
         if not q.strip() and not category.strip():
             raise HTTPException(400, "Enter a search term or category")
         try:
@@ -595,14 +682,14 @@ def create_app(config_path: str = None) -> FastAPI:
 
         items = []
         for entry in entries:
-            state.db.ensure_confirmed_tag("arxiv")
-            state.db.tag_document(entry.doc_id, "arxiv", auto_tagged=True)
+            runtime.db.ensure_confirmed_tag("arxiv")
+            runtime.db.tag_document(entry.doc_id, "arxiv", auto_tagged=True)
             caption_parts = [entry.summary]
             if entry.authors:
                 caption_parts.append(f"Authors: {', '.join(entry.authors)}")
             caption_parts.append(f"arXiv: {entry.arxiv_id}")
             caption = "\n".join(part for part in caption_parts if part)
-            state.db.upsert_catalog_entry(
+            runtime.db.upsert_catalog_entry(
                 message_id=entry.doc_id,
                 filename=entry.filename,
                 caption=caption,
@@ -611,7 +698,7 @@ def create_app(config_path: str = None) -> FastAPI:
                 ext=".pdf",
                 source="arxiv",
             )
-            record = state.db.get_record(entry.doc_id)
+            record = runtime.db.get_record(entry.doc_id)
             items.append({
                 "message_id": _public_message_id(entry.doc_id),
                 "arxiv_id": entry.arxiv_id,
@@ -623,12 +710,21 @@ def create_app(config_path: str = None) -> FastAPI:
                 "status": record.status if record else "",
                 "staging_path": record.staging_path if record else None,
                 "final_path": record.final_path if record else None,
-                "file_exists": _find_existing_file(state.cfg, record, entry.doc_id) is not None,
+                "file_exists": _find_existing_file(runtime.pipeline.cfg, record, entry.doc_id) is not None,
             })
 
         return {"items": items, "total": total}
 
-    async def _run_arxiv_download(doc_id: int, arxiv_id: str, title: str, summary: str, authors: list[str], published: str):
+    async def _run_arxiv_download(
+        runtime: ProfileRuntime,
+        profile_name: str,
+        doc_id: int,
+        arxiv_id: str,
+        title: str,
+        summary: str,
+        authors: list[str],
+        published: str,
+    ):
         try:
             entry = arxiv_client.ArxivEntry(
                 doc_id=doc_id,
@@ -639,31 +735,34 @@ def create_app(config_path: str = None) -> FastAPI:
                 published=published,
                 pdf_url=f"https://arxiv.org/pdf/{arxiv_id}.pdf",
             )
-            path = await asyncio.to_thread(arxiv_client.download_pdf, entry, state.cfg.staging_dir)
+            path = await asyncio.to_thread(arxiv_client.download_pdf, entry, runtime.store.temp_dir)
+            encrypted_path = _finalize_download(runtime, profile_name, path.name, path)
             caption_parts = [summary]
             if authors:
                 caption_parts.append(f"Authors: {', '.join(authors)}")
             caption_parts.append(f"arXiv: {arxiv_id}")
-            state.db.upsert_catalog_entry(
+            runtime.db.upsert_catalog_entry(
                 message_id=doc_id,
                 filename=entry.filename,
                 caption="\n".join(part for part in caption_parts if part),
-                size=path.stat().st_size if path.exists() else None,
+                size=Path(encrypted_path).stat().st_size if Path(encrypted_path).exists() else None,
                 message_date=arxiv_client.message_date_for_catalog(published),
                 ext=".pdf",
                 source="arxiv",
             )
-            state.db.ensure_confirmed_tag("arxiv")
-            state.db.tag_document(doc_id, "arxiv", auto_tagged=True)
-            state.db.mark_downloaded(doc_id, "arxiv", entry.filename, str(path))
+            runtime.db.ensure_confirmed_tag("arxiv")
+            runtime.db.tag_document(doc_id, "arxiv", auto_tagged=True)
+            runtime.db.mark_downloaded(doc_id, "arxiv", entry.filename, encrypted_path)
         except Exception as exc:
             logger.exception("Download/process failed for arXiv %s", arxiv_id)
-            state.db.mark_failed(doc_id, str(exc))
+            runtime.db.mark_failed(doc_id, str(exc))
         finally:
-            state.arxiv_downloading.discard(doc_id)
+            runtime.arxiv_downloading.discard(doc_id)
 
     @app.post("/api/arxiv/download")
-    async def arxiv_download(data: dict):
+    async def arxiv_download(request: Request, data: dict):
+        runtime = _require_runtime(request)
+        profile_name = _profile_name_from_request(request)
         arxiv_id = str(data.get("arxiv_id", "")).strip()
         title = str(data.get("title", "")).strip()
         summary = str(data.get("summary", "")).strip()
@@ -672,7 +771,7 @@ def create_app(config_path: str = None) -> FastAPI:
         if not arxiv_id or not title:
             raise HTTPException(400, "Missing arXiv document metadata")
         doc_id = int(data.get("message_id") or arxiv_client.stable_doc_id(arxiv_id))
-        status_now = state.db.get_status(doc_id)
+        status_now = runtime.db.get_status(doc_id)
         if status_now in (
             db_module.STATUS_DOWNLOADED,
             db_module.STATUS_SORTED,
@@ -680,21 +779,23 @@ def create_app(config_path: str = None) -> FastAPI:
             db_module.STATUS_NEEDS_REVIEW,
         ):
             return {"status": "already_processed", "current_status": status_now}
-        if doc_id in state.arxiv_downloading:
+        if doc_id in runtime.arxiv_downloading:
             return {"status": "already_running"}
-        state.arxiv_downloading.add(doc_id)
-        state.spawn(_run_arxiv_download(doc_id, arxiv_id, title, summary, authors, published))
+        runtime.arxiv_downloading.add(doc_id)
+        state.spawn(_run_arxiv_download(runtime, profile_name, doc_id, arxiv_id, title, summary, authors, published))
         return {"status": "started"}
 
     @app.post("/api/upload/local")
-    async def upload_local_file(file: UploadFile = File(...)):
+    async def upload_local_file(request: Request, file: UploadFile = File(...)):
+        runtime = _require_runtime(request)
+        profile_name = _profile_name_from_request(request)
         filename = Path(file.filename or "").name
         if not filename:
             raise HTTPException(400, "Missing filename")
 
-        state.cfg.staging_dir.mkdir(parents=True, exist_ok=True)
-        message_id = _next_local_upload_id(state.db)
-        staging_path = state.cfg.staging_dir / _local_upload_filename(message_id, filename)
+        runtime.store.temp_dir.mkdir(parents=True, exist_ok=True)
+        message_id = _next_local_upload_id(runtime.db)
+        staging_path = runtime.store.temp_dir / _local_upload_filename(message_id, filename)
 
         try:
             with staging_path.open("wb") as handle:
@@ -704,8 +805,9 @@ def create_app(config_path: str = None) -> FastAPI:
         finally:
             await file.close()
 
-        size = staging_path.stat().st_size if staging_path.exists() else None
-        state.db.upsert_catalog_entry(
+        encrypted_path = _finalize_download(runtime, profile_name, staging_path.name, staging_path)
+        size = Path(encrypted_path).stat().st_size if Path(encrypted_path).exists() else None
+        runtime.db.upsert_catalog_entry(
             message_id=message_id,
             filename=filename,
             caption="Uploaded from local machine",
@@ -714,19 +816,18 @@ def create_app(config_path: str = None) -> FastAPI:
             ext=Path(filename).suffix.lower(),
             source="local",
         )
-        state.db.mark_downloaded(message_id, "local", filename, str(staging_path))
+        runtime.db.mark_downloaded(message_id, "local", filename, encrypted_path)
         return {"status": "uploaded", "message_id": _public_message_id(message_id), "filename": filename}
 
     @app.post("/api/delete/{message_id}")
-    async def delete_file(message_id: int):
-        """Delete a downloaded file from disk and reset its status in the database."""
-        record = state.db.get_record(message_id)
+    async def delete_file(message_id: int, request: Request):
+        runtime = _require_runtime(request)
+        record = runtime.db.get_record(message_id)
         if not record:
             raise HTTPException(404, "File not found in database")
 
-        # Delete files from disk
         deleted_paths = []
-        for path in _candidate_file_locations(state.cfg, record, message_id):
+        for path in _candidate_file_locations(runtime.pipeline.cfg, record, message_id):
             if not path.exists():
                 continue
             try:
@@ -735,36 +836,29 @@ def create_app(config_path: str = None) -> FastAPI:
             except Exception as exc:
                 logger.warning("Failed to delete file %s: %s", path, exc)
 
-        # Remove database record to reset status
-        state.db.delete_file_record(message_id)
+        runtime.db.delete_file_record(message_id)
 
-        return {
-            "status": "deleted",
-            "deleted_paths": deleted_paths,
-        }
+        return {"status": "deleted", "deleted_paths": deleted_paths}
 
     @app.post("/api/rename/{message_id}")
-    async def rename_file(message_id: int, data: dict):
-        """Rename a file in the catalog."""
+    async def rename_file(message_id: int, data: dict, request: Request):
+        runtime = _require_runtime(request)
         new_filename = data.get("filename", "").strip()
         if not new_filename:
             raise HTTPException(400, "Filename cannot be empty")
 
-        state.db.rename_catalog_entry(message_id, new_filename)
+        runtime.db.rename_catalog_entry(message_id, new_filename)
         return {"status": "renamed", "filename": new_filename}
 
     # ---- Tags ----------------------------------------------------------------
 
     @app.get("/api/tags/extract/{message_id}")
-    async def extract_tags_for_document(message_id: int):
-        """Extract potential tags from a single document."""
-        # Get the catalog entry
-        items = state.db.catalog(limit=1, offset=0)
-        # Find the specific item (this is inefficient, but works for now)
-        with state.db._lock:
-            cur = state.db._conn.execute(
+    async def extract_tags_for_document(message_id: int, request: Request):
+        runtime = _require_runtime(request)
+        with runtime.db._lock:
+            cur = runtime.db._conn.execute(
                 "SELECT filename, caption FROM catalog WHERE message_id = ?",
-                (message_id,)
+                (message_id,),
             )
             row = cur.fetchone()
 
@@ -777,31 +871,27 @@ def create_app(config_path: str = None) -> FastAPI:
         # Extract tags
         potential_tags = tagger.extract_potential_tags(filename, caption)
 
-        # Filter out already ignored tags
         ignored_tags = set()
-        with state.db._lock:
-            cur = state.db._conn.execute(
+        with runtime.db._lock:
+            cur = runtime.db._conn.execute(
                 "SELECT tag FROM suggested_tags WHERE status = 'ignored'"
             )
             ignored_tags = {r["tag"] for r in cur.fetchall()}
 
-        # Return tags that aren't ignored
         available_tags = [tag for tag in potential_tags if tag not in ignored_tags]
         return {"tags": sorted(available_tags)}
 
     @app.get("/api/tags/confirmed")
-    async def get_confirmed_tags():
-        """Get all confirmed tags."""
-        return state.db.get_confirmed_tags()
+    async def get_confirmed_tags(request: Request):
+        runtime = _require_runtime(request)
+        return runtime.db.get_confirmed_tags()
 
     @app.post("/api/tags/confirm/{tag}")
-    async def confirm_tag(tag: str, message_id: int = None):
-        """Confirm a tag (adds it to filters). The filter will search all documents."""
-        # Normalize tag to lowercase
+    async def confirm_tag(tag: str, request: Request, message_id: int = None):
+        runtime = _require_runtime(request)
         tag = tag.lower().strip()
 
-        # Upsert the tag as confirmed
-        with state.db._cursor() as cur:
+        with runtime.db._cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO suggested_tags (tag, status) VALUES (?, 'confirmed')
@@ -810,19 +900,14 @@ def create_app(config_path: str = None) -> FastAPI:
                 (tag,)
             )
 
-        # Note: We don't tag individual documents anymore
-        # The filter will do a LIKE search across all documents
-
         return {"status": "confirmed"}
 
     @app.post("/api/tags/ignore/{tag}")
-    async def ignore_tag(tag: str):
-        """Ignore a suggested tag (blacklist it from future suggestions)."""
-        # Normalize tag to lowercase
+    async def ignore_tag(tag: str, request: Request):
+        runtime = _require_runtime(request)
         tag = tag.lower().strip()
 
-        # Upsert the tag as ignored
-        with state.db._cursor() as cur:
+        with runtime.db._cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO suggested_tags (tag, status) VALUES (?, 'ignored')
@@ -833,14 +918,14 @@ def create_app(config_path: str = None) -> FastAPI:
         return {"status": "ignored"}
 
     @app.get("/api/tags/documents/{tag}")
-    async def get_documents_by_tag(tag: str):
-        """Get all documents tagged with this tag."""
-        return state.db.get_documents_by_tag(tag)
+    async def get_documents_by_tag(tag: str, request: Request):
+        runtime = _require_runtime(request)
+        return runtime.db.get_documents_by_tag(tag)
 
     @app.post("/api/catalog/reset")
-    async def reset_catalog():
-        """Clear all catalog data, tags, and document tags to start fresh."""
-        with state.db._cursor() as cur:
+    async def reset_catalog(request: Request):
+        runtime = _require_runtime(request)
+        with runtime.db._cursor() as cur:
             cur.execute("DELETE FROM catalog")
             cur.execute("DELETE FROM suggested_tags")
             cur.execute("DELETE FROM document_tags")
@@ -849,95 +934,100 @@ def create_app(config_path: str = None) -> FastAPI:
     # ---- Background listener ---------------------------------------------
 
     @app.post("/api/listen/start")
-    async def listen_start():
-        if not await state.telegram.is_authorized():
-            raise HTTPException(400, "Log in to Telegram first")
-        if state.listen_task and not state.listen_task.done():
-            return {"status": "already_running"}
-        state.listen_task = asyncio.create_task(
-            state.telegram.listen(state.pipeline.process_file, state.pipeline.is_processed)
+    async def listen_start(request: Request):
+        raise HTTPException(
+            400,
+            "Live listener is disabled for profile-encrypted storage because it would require keeping the key in server memory beyond a single request",
         )
-        return {"status": "started"}
 
     @app.post("/api/listen/stop")
-    async def listen_stop():
-        if state.listen_task:
-            state.listen_task.cancel()
-            state.listen_task = None
+    async def listen_stop(request: Request):
+        runtime = _require_runtime(request)
+        task = runtime.listen_task
+        runtime.listen_task = None
+        if task:
+            task.cancel()
         return {"status": "stopped"}
 
     # ---- Config -------------------------------------------------------------
 
     @app.get("/api/config")
-    async def get_config():
-        return state.cfg.as_dict_masked()
+    async def get_config(request: Request):
+        runtime = _require_runtime(request)
+        snapshot = state.cfg.as_dict_masked()
+        _merge_nested(snapshot, runtime.settings)
+        snapshot.setdefault("telegram", {})
+        if (runtime.settings.get("telegram") or {}).get("api_hash"):
+            snapshot["telegram"]["api_hash"] = "********"
+        snapshot["telegram"]["session_name"] = runtime.profile_hash
+        snapshot["profile"] = {
+            "hash": runtime.profile_hash,
+            "storage_dir": str(runtime.store.root_dir),
+            "min_length": PROFILE_MIN_LENGTH,
+        }
+        return snapshot
 
     @app.post("/api/config")
-    async def save_config(patch: dict):
+    async def save_config(patch: dict, request: Request):
+        runtime = _require_runtime(request)
+        profile_name = _profile_name_from_request(request)
         _strip_masked_secrets(patch, state.cfg)
-        state.cfg.update(patch)
-        state.cfg.save()
-        if "telegram" in patch:
-            await state.rebuild_telegram_client()
+        telegram_patch = patch.get("telegram") if isinstance(patch.get("telegram"), dict) else None
+        if telegram_patch is not None:
+            _strip_masked_telegram_secrets(telegram_patch)
+        _merge_nested(runtime.settings, patch)
+        state.save_settings(runtime, profile_name)
+        if telegram_patch is not None:
+            await state.get_telegram_client(runtime, rebuild=True)
         return {
             "status": "saved",
-            "note": "Restart the Estratto service for staging/db path changes to take effect.",
+            "note": "Profile settings were saved encrypted at rest.",
         }
 
     # ---- Reading progress -----------------------------------------------------
 
     @app.get("/api/workspace-state")
-    async def get_workspace_state(estratto_session: Optional[str] = Cookie(default=None)):
-        user = _require_user(estratto_session)
-        state_data = state.db.get_user_workspace_state(user["id"])
-        if not state_data:
+    async def get_workspace_state(request: Request):
+        runtime = _require_runtime(request)
+        payload = runtime.settings.get("workspace") or {}
+        if not payload:
             return {"open_documents": [], "active_document_id": None}
-        return state_data
+        return {
+            "open_documents": payload.get("open_documents") or [],
+            "active_document_id": payload.get("active_document_id"),
+        }
 
     @app.post("/api/workspace-state")
     async def save_workspace_state(
         body: WorkspaceStateBody,
-        estratto_session: Optional[str] = Cookie(default=None),
+        request: Request,
     ):
-        user = _require_user(estratto_session)
-        state.db.save_user_workspace_state(
-            user["id"],
-            body.open_documents,
-            body.active_document_id,
-        )
+        runtime = _require_runtime(request)
+        profile_name = _profile_name_from_request(request)
+        runtime.settings["workspace"] = {
+            "open_documents": body.open_documents,
+            "active_document_id": body.active_document_id,
+        }
+        state.save_settings(runtime, profile_name)
         return {"status": "saved"}
 
     @app.get("/api/document-state")
     async def get_document_state(
+        request: Request,
         document_id: str,
         document_kind: str = "file",
-        estratto_session: Optional[str] = Cookie(default=None),
     ):
-        user = _current_user(estratto_session)
-        if user:
-            synced_state = state.db.get_user_document_state(user["id"], document_id)
-            if synced_state:
-                return synced_state
-
-        if document_kind == "file":
-            try:
-                message_id = int(document_id)
-            except ValueError:
-                return {
-                    "document_id": document_id,
-                    "document_kind": document_kind,
-                    "current_page": 1,
-                    "total_pages": None,
-                    "scroll_position": 0,
-                    "viewer_prefs": {},
-                }
-            progress = state.db.get_reading_progress(message_id)
-            if progress:
-                progress["document_id"] = document_id
-                progress["document_kind"] = document_kind
-                progress["viewer_prefs"] = {}
-                return progress
-
+        runtime = _require_runtime(request)
+        payload = _document_state_payload(runtime, document_id)
+        if payload:
+            return {
+                "document_id": payload.get("document_id", document_id),
+                "document_kind": payload.get("document_kind", document_kind),
+                "current_page": payload.get("current_page", 1),
+                "total_pages": payload.get("total_pages"),
+                "scroll_position": payload.get("scroll_position", 0),
+                "viewer_prefs": payload.get("viewer_prefs") or {},
+            }
         return {
             "document_id": document_id,
             "document_kind": document_kind,
@@ -950,40 +1040,29 @@ def create_app(config_path: str = None) -> FastAPI:
     @app.post("/api/document-state")
     async def save_document_state(
         body: DocumentStateBody,
-        estratto_session: Optional[str] = Cookie(default=None),
+        request: Request,
     ):
-        user = _current_user(estratto_session)
-        if user:
-            state.db.save_user_document_state(
-                user["id"],
-                body.document_id,
-                body.document_kind,
-                current_page=body.current_page,
-                total_pages=body.total_pages,
-                scroll_position=str(body.scroll_position),
-                viewer_prefs=body.viewer_prefs,
-            )
-            return {"status": "saved", "synced": True}
-
-        if body.document_kind == "file":
-            try:
-                message_id = int(body.document_id)
-            except ValueError:
-                return {"status": "ignored", "synced": False}
-            state.db.save_reading_progress(
-                message_id=message_id,
-                current_page=body.current_page,
-                total_pages=body.total_pages,
-                scroll_position=body.scroll_position,
-            )
-        return {"status": "saved", "synced": False}
+        runtime = _require_runtime(request)
+        profile_name = _profile_name_from_request(request)
+        documents = _settings_section(runtime, "documents")
+        documents[body.document_id] = {
+            "document_id": body.document_id,
+            "document_kind": body.document_kind,
+            "current_page": body.current_page,
+            "total_pages": body.total_pages,
+            "scroll_position": str(body.scroll_position),
+            "viewer_prefs": body.viewer_prefs,
+        }
+        state.save_settings(runtime, profile_name)
+        return {"status": "saved", "synced": True}
 
     @app.get("/api/file_status/{message_id}")
-    async def file_status(message_id: int):
-        record = state.db.get_record(message_id)
-        catalog_entry = state.db.get_catalog_entry(message_id)
-        path_obj = _find_existing_file(state.cfg, record, message_id)
-        actual_ext = path_obj.suffix.lower() if path_obj else None
+    async def file_status(message_id: int, request: Request):
+        runtime = _require_runtime(request)
+        record = runtime.db.get_record(message_id)
+        catalog_entry = runtime.db.get_catalog_entry(message_id)
+        path_obj = _find_existing_file(runtime.pipeline.cfg, record, message_id)
+        actual_ext = path_obj.suffix.lower() if path_obj and path_obj.is_file() else None
         return {
             "exists": path_obj is not None,
             "filename": catalog_entry.get("filename") if catalog_entry else None,
@@ -991,16 +1070,18 @@ def create_app(config_path: str = None) -> FastAPI:
         }
 
     @app.get("/api/website_title")
-    async def website_title(url: str):
+    async def website_title(request: Request, url: str):
+        _require_runtime(request)
         title = await asyncio.to_thread(_fetch_website_title, url)
         return {"title": title}
 
     @app.post("/api/ai/ask")
-    async def ask_ai(body: AiAskBody):
-        if not state.cfg.openai_enabled:
+    async def ask_ai(body: AiAskBody, request: Request):
+        runtime = _require_runtime(request)
+        if not runtime.pipeline.cfg.openai_enabled:
             raise HTTPException(400, "OpenAI is disabled in configuration")
 
-        api_key = str(state.cfg.get("openai", "api_key", default="")).strip()
+        api_key = str(runtime.pipeline.cfg.get("openai", "api_key", default="")).strip()
         if not api_key or api_key == "YOUR_OPENAI_API_KEY":
             raise HTTPException(400, "OpenAI API key is not configured")
 
@@ -1010,7 +1091,7 @@ def create_app(config_path: str = None) -> FastAPI:
 
         action = (body.action or "explain_simple").strip()
         question = (body.question or "").strip()
-        model = str(state.cfg.get("openai", "model", default="gpt-4o-mini")).strip() or "gpt-4o-mini"
+        model = str(runtime.pipeline.cfg.get("openai", "model", default="gpt-4o-mini")).strip() or "gpt-4o-mini"
 
         prompts = {
             "explain_simple": "Explain the selected text in simple words for a non-expert reader.",
@@ -1072,31 +1153,67 @@ def create_app(config_path: str = None) -> FastAPI:
 
     @app.options("/api/file/{message_id}")
     async def serve_file_options(message_id: int):
-        """Handle CORS preflight for file serving."""
         from fastapi.responses import Response
         response = Response()
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = "Range, Content-Type"
+        response.headers["Access-Control-Allow-Headers"] = (
+            f"Range, Content-Type, {PROFILE_HEADER}, {PROFILE_HASH_HEADER}"
+        )
         response.headers["Access-Control-Max-Age"] = "86400"
         return response
 
-    def _build_file_response(message_id: int, request: Request, head_only: bool = False):
+    @app.get("/api/file-manifest/{message_id}")
+    async def file_manifest(message_id: int, request: Request):
+        runtime = _runtime_for_chunk_request(request)
+        record = runtime.db.get_record(message_id)
+        path_obj = _find_existing_file(runtime.pipeline.cfg, record, message_id)
+        if not path_obj or not path_obj.exists():
+            raise HTTPException(404, f"File not found for message_id={message_id}")
+        manifest = runtime.store.load_file_manifest(path_obj)
+        return {
+            "message_id": str(message_id),
+            "profile_hash": runtime.profile_hash,
+            **manifest,
+        }
+
+    @app.get("/api/file-chunk/{message_id}/{chunk_index}")
+    async def file_chunk(message_id: int, chunk_index: int, request: Request, decrypt: bool = False):
+        runtime = _runtime_for_chunk_request(request)
+        record = runtime.db.get_record(message_id)
+        path_obj = _find_existing_file(runtime.pipeline.cfg, record, message_id)
+        if not path_obj or not path_obj.exists():
+            raise HTTPException(404, f"File not found for message_id={message_id}")
+        if decrypt:
+            profile_name = _profile_name_from_request(request)
+            payload = runtime.store.decrypt_file_chunk(profile_name, path_obj, chunk_index)
+            media_type = "application/octet-stream"
+        else:
+            payload = runtime.store.read_encrypted_file_chunk(path_obj, chunk_index)
+            media_type = "application/octet-stream"
+        return Response(
+            content=payload,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+
+    def _build_file_response(runtime: ProfileRuntime, message_id: int, request: Request, head_only: bool = False):
         import mimetypes
 
-        record = state.db.get_record(message_id)
-        path_obj = _find_existing_file(state.cfg, record, message_id)
+        record = runtime.db.get_record(message_id)
+        path_obj = _find_existing_file(runtime.pipeline.cfg, record, message_id)
 
         if not path_obj or not path_obj.exists():
-            logger.error("File not found for message_id=%s", message_id)
-            logger.error("Candidate paths: %s", _candidate_file_locations(state.cfg, record, message_id))
             raise HTTPException(404, f"File not found for message_id={message_id}")
 
-        # Guess MIME type from file extension
-        mime_type, _ = mimetypes.guess_type(str(path_obj))
+        catalog_entry = runtime.db.get_catalog_entry(message_id) or {}
+        filename = str(catalog_entry.get("filename") or path_obj.stem)
+        mime_type, _ = mimetypes.guess_type(filename)
         if not mime_type:
-            # Default MIME types for common ebook formats
-            ext = path_obj.suffix.lower()
+            ext = Path(filename).suffix.lower()
             mime_types_map = {
                 '.pdf': 'application/pdf',
                 '.epub': 'application/epub+zip',
@@ -1105,28 +1222,19 @@ def create_app(config_path: str = None) -> FastAPI:
             }
             mime_type = mime_types_map.get(ext, 'application/octet-stream')
 
-        # Log detailed file information
-        file_size = path_obj.stat().st_size
-        logger.info(f"[File Serving] message_id={message_id}")
-        logger.info(f"[File Serving] path={path_obj}")
-        logger.info(f"[File Serving] size={file_size} bytes ({file_size/1024/1024:.2f} MB)")
-        logger.info(f"[File Serving] mime_type={mime_type}")
-        logger.info(f"[File Serving] exists={path_obj.exists()}")
-
-        # Verify file is readable
         try:
-            with open(path_obj, 'rb') as f:
-                header = f.read(20)
-                logger.info(f"[File Serving] First 20 bytes: {header[:20]}")
-                logger.info(f"[File Serving] PDF header check: {header.startswith(b'%PDF')}")
-        except Exception as e:
-            logger.error(f"[File Serving] Failed to read file: {e}")
-            raise HTTPException(500, f"Cannot read file: {e}")
+            manifest = runtime.store.load_file_manifest(path_obj)
+        except ProfileError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(500, f"Cannot read file: {exc}") from exc
+
+        file_size = int(manifest.get("plaintext_size") or 0)
 
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Allow-Headers": f"Range, {PROFILE_HEADER}, {PROFILE_HASH_HEADER}",
             "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
             "Accept-Ranges": "bytes",
             "Cache-Control": "private, max-age=3600",
@@ -1137,10 +1245,13 @@ def create_app(config_path: str = None) -> FastAPI:
             headers["Content-Length"] = str(file_size)
             if head_only:
                 return Response(status_code=200, media_type=mime_type, headers=headers)
+            def iter_full_file():
+                profile_name = _profile_name_from_request(request)
+                chunk_count = int(manifest.get("chunk_count") or 0)
+                for chunk_index in range(chunk_count):
+                    yield runtime.store.decrypt_file_chunk(profile_name, path_obj, chunk_index, manifest=manifest)
 
-            response = FileResponse(str(path_obj), media_type=mime_type, headers=headers)
-            logger.info("[File Serving] Full response created successfully")
-            return response
+            return StreamingResponse(iter_full_file(), status_code=200, media_type=mime_type, headers=headers)
 
         start, end = byte_range
         chunk_size = end - start + 1
@@ -1151,26 +1262,29 @@ def create_app(config_path: str = None) -> FastAPI:
             return Response(status_code=206, media_type=mime_type, headers=headers)
 
         def iter_file():
-            with open(path_obj, "rb") as f:
-                f.seek(start)
-                remaining = chunk_size
-                while remaining > 0:
-                    data = f.read(min(65536, remaining))
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
+            profile_name = _profile_name_from_request(request)
+            storage_chunk_size = int(manifest.get("chunk_size") or state.cfg.encryption_chunk_size)
+            start_chunk = start // storage_chunk_size
+            end_chunk = end // storage_chunk_size
+            for chunk_index in range(start_chunk, end_chunk + 1):
+                chunk = runtime.store.decrypt_file_chunk(profile_name, path_obj, chunk_index, manifest=manifest)
+                chunk_start = chunk_index * storage_chunk_size
+                slice_start = max(0, start - chunk_start)
+                slice_end = min(len(chunk), end - chunk_start + 1)
+                if slice_start < slice_end:
+                    yield chunk[slice_start:slice_end]
 
-        logger.info("[File Serving] Range response created successfully: %s-%s", start, end)
         return StreamingResponse(iter_file(), status_code=206, media_type=mime_type, headers=headers)
 
     @app.head("/api/file/{message_id}")
     async def serve_file_head(message_id: int, request: Request):
-        return _build_file_response(message_id, request, head_only=True)
+        runtime = _require_runtime(request)
+        return _build_file_response(runtime, message_id, request, head_only=True)
 
     @app.get("/api/file/{message_id}")
     async def serve_file(message_id: int, request: Request):
-        return _build_file_response(message_id, request)
+        runtime = _require_runtime(request)
+        return _build_file_response(runtime, message_id, request)
 
     # ---- Static frontend ------------------------------------------------------
 
@@ -1198,3 +1312,8 @@ def _strip_masked_secrets(patch: dict, cfg: Config, path: tuple = ()) -> None:
             _strip_masked_secrets(v, cfg, key_path)
         elif key_path in SECRET_KEYS and v == "********":
             del patch[k]
+
+
+def _strip_masked_telegram_secrets(patch: dict) -> None:
+    if patch.get("api_hash") == "********":
+        del patch["api_hash"]

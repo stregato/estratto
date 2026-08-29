@@ -31,7 +31,7 @@
     <div class="settings-menu">
       <button id="settings-toggle" class="settings-btn">⚙️</button>
       <div id="settings-dropdown" class="dropdown" style="display:none">
-        <button class="tab-btn" data-tab="account">Account</button>
+        <button class="tab-btn" data-tab="account">Profile</button>
         <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="config">Configuration</button>
         <button id="reset-catalog-menu-btn" class="tab-btn">Reset catalog</button>
@@ -207,27 +207,16 @@
 
       <section id="tab-account" class="tab">
         <div class="card">
-          <h3>Account</h3>
-          <p class="muted">Email sign-in enables synced open documents, reading position, and zoom across devices on this Estratto server.</p>
-          <div id="auth-signed-out">
-            <label>Email
-              <input id="auth-email-input" type="email" placeholder="you@example.com" autocomplete="email">
-            </label>
-            <button id="auth-request-code-btn" type="button">Generate sign-in code</button>
-            <p id="auth-request-message" class="muted"></p>
-            <div id="auth-code-step" style="display:none">
-              <label>Code
-                <input id="auth-code-input" type="text" inputmode="numeric" placeholder="6-digit code" autocomplete="one-time-code">
-              </label>
-              <button id="auth-verify-code-btn" type="button">Sign in</button>
-              <p id="auth-verify-message" class="muted"></p>
-            </div>
-          </div>
-          <div id="auth-signed-in" style="display:none">
-            <p>Signed in as <strong id="auth-email-display"></strong></p>
-            <button id="auth-logout-btn" type="button">Log out</button>
-            <p class="muted">If SMTP is configured on this server, sign-in codes are delivered by email. Otherwise Estratto falls back to showing the generated code directly in the UI.</p>
-          </div>
+          <h3>Profile</h3>
+          <p class="muted">Profiles replace authentication. The raw profile text is used as encryption input; the SHA-256 hash is used as the storage binding.</p>
+          <label>Saved profiles
+            <select id="profile-select"></select>
+          </label>
+          <label>Current profile hash
+            <input id="profile-hash-display" type="text" readonly>
+          </label>
+          <p class="muted">Changing profile switches to a different encrypted storage area.</p>
+          <button id="profile-open-btn" type="button">Change profile</button>
         </div>
       </section>
 
@@ -238,18 +227,6 @@
           <p class="muted">The Telegram channel Estratto indexes and downloads PDFs from.
           You can also set this right after logging in, on the Telegram Login tab.</p>
           <label>Channel (username, t.me link, or numeric ID) <input name="telegram.channel" type="text" placeholder="e.g. mychannel or https://t.me/mychannel"></label>
-        </fieldset>
-
-        <fieldset>
-          <legend>Local storage</legend>
-          <p class="muted">Downloaded files are stored locally here.</p>
-          <label>Downloaded files directory <input name="staging.dir" type="text"></label>
-        </fieldset>
-
-        <fieldset>
-          <legend>Web UI</legend>
-          <label>Bind host <input name="web.host" type="text"></label>
-          <label>Port <input name="web.port" type="number"></label>
         </fieldset>
 
           <button type="submit">Save configuration</button>
@@ -313,9 +290,6 @@
         <label>API Hash
           <input id="telegram-advanced-api-hash" type="text">
         </label>
-        <label>Session name
-          <input id="telegram-advanced-session-name" type="text">
-        </label>
         <div class="modal-actions">
           <button id="telegram-advanced-save-btn">Save</button>
         </div>
@@ -345,6 +319,27 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=10"></script>
+  <div id="profile-modal" class="modal" style="display:none">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Choose Profile</h3>
+      </div>
+      <div class="modal-body">
+        <p class="muted">Enter any profile text with at least 17 characters. Spaces are allowed.</p>
+        <label>Saved profiles
+          <select id="profile-modal-select"></select>
+        </label>
+        <label>Profile
+          <input id="profile-input" type="text" minlength="17" placeholder="e.g. My private reading profile">
+        </label>
+        <div class="modal-actions">
+          <button id="profile-save-btn">Open profile</button>
+        </div>
+        <p id="profile-message" class="muted"></p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>

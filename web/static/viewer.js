@@ -1,5 +1,21 @@
 (() => {
   console.log("=== VIEWER.JS v6 LOADED (STACKED PDF VIEWER) ===");
+  const PROFILE_HEADER = "X-Estratto-Profile";
+  const PROFILE_HASH_HEADER = "X-Estratto-Profile-Hash";
+  const profileName = (() => {
+    try {
+      return localStorage.getItem("estrattoProfileName") || "";
+    } catch (_e) {
+      return "";
+    }
+  })();
+  const profileHash = (() => {
+    try {
+      return localStorage.getItem("estrattoProfileHash") || "";
+    } catch (_e) {
+      return "";
+    }
+  })();
 
   const params = new URLSearchParams(window.location.search);
   const messageId = params.get("id");
@@ -45,6 +61,9 @@
   const prevBtn = document.getElementById("prev-page");
   const nextBtn = document.getElementById("next-page");
   const pageInfo = document.getElementById("page-info");
+  const fileRequestHeaders = profileName ? { [PROFILE_HEADER]: profileName } : {};
+  const encryptedFileHeaders = profileHash ? { [PROFILE_HASH_HEADER]: profileHash } : {};
+  const canClientDecrypt = Boolean(window.crypto?.subtle && profileName && profileHash);
 
   function applyThemePreference() {
     let themePreference = "";
@@ -341,8 +360,15 @@
   }
 
   async function api(path, opts = {}) {
+    const headers = { ...(opts.headers || {}) };
+    if (!(opts.body instanceof FormData) && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    if (profileName) {
+      headers[PROFILE_HEADER] = profileName;
+    }
     const res = await fetch(path, {
-      headers: { "Content-Type": "application/json" },
+      headers,
       ...opts,
     });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -381,6 +407,145 @@
   function hideLoadingForPdf() {
     loadingOverlay.style.display = "none";
     loadingText.textContent = "";
+  }
+
+  async function fetchJson(path, opts = {}) {
+    const headers = { ...(opts.headers || {}) };
+    if (!(opts.body instanceof FormData) && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    const res = await fetch(path, { ...opts, headers });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || `${res.status} ${res.statusText}`);
+    }
+    return res.json();
+  }
+
+  function base64ToBytes(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  async function deriveFileKey(saltB64) {
+    const encoder = new TextEncoder();
+    const baseKey = await window.crypto.subtle.importKey(
+      "raw",
+      encoder.encode(profileName),
+      "PBKDF2",
+      false,
+      ["deriveKey"],
+    );
+    return window.crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: base64ToBytes(saltB64),
+        iterations: 390000,
+      },
+      baseKey,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"],
+    );
+  }
+
+  async function buildClientDecryptionContext() {
+    if (!canClientDecrypt) {
+      throw new Error("Client-side decryption is not available");
+    }
+    const manifest = await fetchJson(`/api/file-manifest/${messageId}`, { headers: encryptedFileHeaders });
+    const key = await deriveFileKey(manifest.salt_b64);
+    const chunkCache = new Map();
+
+    async function decryptChunk(chunkIndex) {
+      if (!chunkCache.has(chunkIndex)) {
+        chunkCache.set(chunkIndex, (async () => {
+          const res = await fetch(`/api/file-chunk/${messageId}/${chunkIndex}`, {
+            headers: encryptedFileHeaders,
+          });
+          if (!res.ok) {
+            throw new Error(`Chunk ${chunkIndex} failed: ${res.status} ${res.statusText}`);
+          }
+          const payload = new Uint8Array(await res.arrayBuffer());
+          const nonce = payload.slice(0, 12);
+          const ciphertext = payload.slice(12);
+          const aad = new Uint8Array(8);
+          new DataView(aad.buffer).setBigUint64(0, BigInt(chunkIndex), false);
+          const plain = await window.crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: nonce, additionalData: aad },
+            key,
+            ciphertext,
+          );
+          return new Uint8Array(plain);
+        })());
+      }
+      return chunkCache.get(chunkIndex);
+    }
+
+    async function readRange(begin, endExclusive) {
+      const chunkSize = Number(manifest.chunk_size) || 1048576;
+      const startChunk = Math.floor(begin / chunkSize);
+      const endChunk = Math.max(startChunk, Math.floor((Math.max(begin, endExclusive - 1)) / chunkSize));
+      const parts = [];
+      let total = 0;
+
+      for (let chunkIndex = startChunk; chunkIndex <= endChunk; chunkIndex += 1) {
+        const chunk = await decryptChunk(chunkIndex);
+        const chunkStart = chunkIndex * chunkSize;
+        const sliceStart = Math.max(0, begin - chunkStart);
+        const sliceEnd = Math.min(chunk.length, endExclusive - chunkStart);
+        if (sliceStart < sliceEnd) {
+          const part = chunk.slice(sliceStart, sliceEnd);
+          parts.push(part);
+          total += part.length;
+        }
+      }
+
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const part of parts) {
+        merged.set(part, offset);
+        offset += part.length;
+      }
+      return merged;
+    }
+
+    async function readAll(onProgress = null) {
+      const chunkCount = Number(manifest.chunk_count) || 0;
+      const parts = [];
+      let loaded = 0;
+      for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+        const chunk = await decryptChunk(chunkIndex);
+        parts.push(chunk);
+        loaded += chunk.length;
+        if (onProgress) onProgress(loaded, Number(manifest.plaintext_size) || loaded);
+      }
+      const merged = new Uint8Array(loaded);
+      let offset = 0;
+      for (const part of parts) {
+        merged.set(part, offset);
+        offset += part.length;
+      }
+      return merged;
+    }
+
+    return { manifest, readRange, readAll };
+  }
+
+  async function loadClientDecryptedBlob(label = "file") {
+    const context = await buildClientDecryptionContext();
+    const totalBytes = Number(context.manifest.plaintext_size) || 0;
+    const bytes = await context.readAll((loaded, total) => {
+      const denominator = total || totalBytes || 1;
+      const percent = Math.max(0, Math.min(100, Math.round((loaded / denominator) * 100)));
+      showLoading(`Decrypting ${label}... ${percent}%`);
+    });
+    return new Blob([bytes], { type: "application/octet-stream" });
   }
 
   async function toggleFullscreen() {
@@ -943,13 +1108,41 @@
     }
 
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
-    const loadingTask = pdfjsLib.getDocument({
-      url: `/api/file/${messageId}`,
-      disableAutoFetch: true,
-      disableStream: false,
-      disableRange: false,
-      rangeChunkSize: 262144,
-    });
+    let loadingTask;
+    if (canClientDecrypt) {
+      try {
+        const decryptContext = await buildClientDecryptionContext();
+        const fileLength = Number(decryptContext.manifest.plaintext_size) || 0;
+        const rangeTransport = new pdfjsLib.PDFDataRangeTransport(fileLength, null, false);
+        rangeTransport.requestDataRange = (begin, end) => {
+          decryptContext.readRange(begin, end).then((bytes) => {
+            rangeTransport.onDataRange(begin, bytes);
+          }).catch((error) => {
+            console.warn("Client-side PDF chunk load failed, PDF.js will fail over this request:", error);
+          });
+        };
+        loadingTask = pdfjsLib.getDocument({
+          length: fileLength,
+          range: rangeTransport,
+          disableAutoFetch: false,
+          disableStream: true,
+          disableRange: false,
+          rangeChunkSize: 262144,
+        });
+      } catch (error) {
+        console.warn("Client-side PDF decryption unavailable, falling back to server decryption:", error);
+      }
+    }
+    if (!loadingTask) {
+      loadingTask = pdfjsLib.getDocument({
+        url: `/api/file/${messageId}`,
+        httpHeaders: fileRequestHeaders,
+        disableAutoFetch: true,
+        disableStream: false,
+        disableRange: false,
+        rangeChunkSize: 262144,
+      });
+    }
     loadingTask.onProgress = (progressData) => {
       if (currentViewer === "pdf") return;
       if (!progressData?.total) {
@@ -1062,7 +1255,19 @@
     syncEpubViewport();
 
     showLoading("Opening EPUB...");
-    const book = ePub(`/api/file/${messageId}`);
+    let epubBlob;
+    if (canClientDecrypt) {
+      try {
+        epubBlob = await loadClientDecryptedBlob("EPUB");
+      } catch (error) {
+        console.warn("Client-side EPUB decryption unavailable, falling back to server decryption:", error);
+      }
+    }
+    if (!epubBlob) {
+      const epubResponse = await fetch(`/api/file/${messageId}`, { headers: fileRequestHeaders });
+      epubBlob = await epubResponse.blob();
+    }
+    const book = ePub(epubBlob);
     const rendition = book.renderTo("epub-viewer", {
       width: "100%",
       height: "100%",
@@ -1294,9 +1499,18 @@
     viewerContent.style.display = "none";
     showLoading("Loading comic archive...");
 
-    // Fetch the CBZ/CBR file
-    const response = await fetch(`/api/file/${messageId}`);
-    const blob = await response.blob();
+    let blob;
+    if (canClientDecrypt) {
+      try {
+        blob = await loadClientDecryptedBlob("comic");
+      } catch (error) {
+        console.warn("Client-side comic decryption unavailable, falling back to server decryption:", error);
+      }
+    }
+    if (!blob) {
+      const response = await fetch(`/api/file/${messageId}`, { headers: fileRequestHeaders });
+      blob = await response.blob();
+    }
     showLoading("Unpacking pages...");
 
     // Load with JSZip
@@ -1396,7 +1610,11 @@
   async function testFileAccess() {
     try {
       showLoading("Checking file access...");
-      const response = await fetch(`/api/file/${messageId}`, { method: "HEAD" });
+      if (canClientDecrypt) {
+        await fetchJson(`/api/file-manifest/${messageId}`, { headers: encryptedFileHeaders });
+        return true;
+      }
+      const response = await fetch(`/api/file/${messageId}`, { method: "HEAD", headers: fileRequestHeaders });
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`File not accessible (${response.status}): ${errorText}`);

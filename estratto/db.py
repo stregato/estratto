@@ -98,24 +98,11 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS user_workspace_state (
-    user_id INTEGER PRIMARY KEY,
-    open_documents_json TEXT NOT NULL DEFAULT '[]',
-    active_document_id TEXT,
-    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS user_document_state (
+CREATE TABLE IF NOT EXISTS user_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    document_id TEXT NOT NULL,
-    document_kind TEXT DEFAULT 'file',
-    current_page INTEGER DEFAULT 1,
-    total_pages INTEGER,
-    scroll_position TEXT DEFAULT '0',
-    viewer_prefs_json TEXT NOT NULL DEFAULT '{}',
+    payload_json TEXT NOT NULL,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (user_id, document_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
@@ -717,93 +704,74 @@ class Database:
         with self._cursor() as cur:
             cur.execute("DELETE FROM user_sessions WHERE session_hash = ?", (session_hash,))
 
-    def get_user_workspace_state(self, user_id: int) -> Optional[dict]:
+    def _user_setting_identity(self, payload: dict) -> str:
+        setting_type = str(payload.get("type") or "").strip()
+        data = payload.get("data") or {}
+        if setting_type == "document_state":
+            document_id = str(data.get("document_id") or "").strip()
+            return f"{setting_type}:{document_id}"
+        return setting_type
+
+    def list_user_settings(self, user_id: int) -> list[dict]:
         with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM user_workspace_state WHERE user_id = ?",
+            rows = self._conn.execute(
+                "SELECT payload_json, updated_at FROM user_settings WHERE user_id = ? ORDER BY id ASC",
                 (user_id,),
-            ).fetchone()
-        if not row:
-            return None
-        return {
-            "open_documents": json.loads(row["open_documents_json"] or "[]"),
-            "active_document_id": row["active_document_id"],
-            "updated_at": row["updated_at"],
-        }
+            ).fetchall()
+        settings: list[dict] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"] or "{}")
+            if isinstance(payload, dict):
+                payload.setdefault("updated_at", row["updated_at"])
+                settings.append(payload)
+        return settings
 
-    def save_user_workspace_state(
-        self,
-        user_id: int,
-        open_documents: list[dict],
-        active_document_id: Optional[str],
-    ) -> None:
-        with self._cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO user_workspace_state (user_id, open_documents_json, active_document_id, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    open_documents_json = excluded.open_documents_json,
-                    active_document_id = excluded.active_document_id,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (user_id, json.dumps(open_documents), active_document_id),
-            )
+    def get_user_setting(self, user_id: int, setting_type: str, **match_data) -> Optional[dict]:
+        for payload in self.list_user_settings(user_id):
+            if payload.get("type") != setting_type:
+                continue
+            data = payload.get("data") or {}
+            if all(data.get(k) == v for k, v in match_data.items()):
+                return payload
+        return None
 
-    def get_user_document_state(self, user_id: int, document_id: str) -> Optional[dict]:
+    def save_user_setting(self, user_id: int, payload: dict) -> None:
+        payload = dict(payload)
+        identity = self._user_setting_identity(payload)
+        existing_rows = []
         with self._lock:
-            row = self._conn.execute(
-                """
-                SELECT *
-                FROM user_document_state
-                WHERE user_id = ? AND document_id = ?
-                """,
-                (user_id, document_id),
-            ).fetchone()
-        if not row:
-            return None
-        return {
-            "document_id": row["document_id"],
-            "document_kind": row["document_kind"],
-            "current_page": row["current_page"],
-            "total_pages": row["total_pages"],
-            "scroll_position": row["scroll_position"],
-            "viewer_prefs": json.loads(row["viewer_prefs_json"] or "{}"),
-            "updated_at": row["updated_at"],
-        }
+            rows = self._conn.execute(
+                "SELECT id, payload_json FROM user_settings WHERE user_id = ? ORDER BY id ASC",
+                (user_id,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    existing_payload = json.loads(row["payload_json"] or "{}")
+                except Exception:
+                    existing_payload = {}
+                existing_rows.append((row["id"], existing_payload))
 
-    def save_user_document_state(
-        self,
-        user_id: int,
-        document_id: str,
-        document_kind: str,
-        current_page: int = 1,
-        total_pages: Optional[int] = None,
-        scroll_position: str = "0",
-        viewer_prefs: Optional[dict] = None,
-    ) -> None:
+        existing_id = None
+        for row_id, existing_payload in existing_rows:
+            if self._user_setting_identity(existing_payload) == identity:
+                existing_id = row_id
+                break
+
         with self._cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO user_document_state (
-                    user_id, document_id, document_kind, current_page, total_pages, scroll_position, viewer_prefs_json, updated_at
+            if existing_id is None:
+                cur.execute(
+                    """
+                    INSERT INTO user_settings (user_id, payload_json, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (user_id, json.dumps(payload)),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(user_id, document_id) DO UPDATE SET
-                    document_kind = excluded.document_kind,
-                    current_page = excluded.current_page,
-                    total_pages = excluded.total_pages,
-                    scroll_position = excluded.scroll_position,
-                    viewer_prefs_json = excluded.viewer_prefs_json,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    user_id,
-                    document_id,
-                    document_kind,
-                    current_page,
-                    total_pages,
-                    str(scroll_position),
-                    json.dumps(viewer_prefs or {}),
-                ),
-            )
+            else:
+                cur.execute(
+                    """
+                    UPDATE user_settings
+                    SET payload_json = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (json.dumps(payload), existing_id, user_id),
+                )

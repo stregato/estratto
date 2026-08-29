@@ -24,17 +24,8 @@ extensions:
 db:
   path: "./estratto.db"
 
-auth:
-  email_code_ttl_minutes: 15
-
-mail:
-  # Prefer setting these through `.env`. These fields exist only for completeness.
-  host: ""
-  port: 465
-  secure: true
-  user: ""
-  pass: ""
-  from: ""
+storage:
+  chunk_size: 1048576
 
 openai:
   enabled: false
@@ -46,34 +37,22 @@ openai:
 
 libraries:
   book:
-    root: "/kavita-library/Books"
+    root: "/library/Books"
     template: "{category}/{author}/{title}/{title}.{ext}"
   magazine:
-    root: "/kavita-library/Magazines"
+    root: "/library/Magazines"
     template: "{category}/{magazine}/{year}/{magazine} {issue}.{ext}"
   comic:
-    root: "/kavita-library/Comics"
+    root: "/library/Comics"
     template: "{category}/{series}/{series} {volume}.{ext}"
   academic-article:
-    root: "/kavita-library/Articles"
+    root: "/library/Articles"
     template: "{category}/{author}/{title}/{title}.{ext}"
 
 filename_patterns:
 - '^(?P<author>[^-]+?)\s*-\s*(?P<title>.+)$'
 - '^(?P<magazine>[^-]+?)\s*-\s*(?P<year>\d{4})-(?P<issue>\d{1,2})$'
 - '^(?P<series>.+?)\s+(?P<volume>\d+)$'
-
-kavita:
-  base_url: ""
-  api_key: ""
-  library_ids:
-    book: 1
-    magazine: 2
-    comic: 3
-    academic-article: 1
-  scan_debounce_seconds: 60
-  retry_attempts: 5
-  retry_backoff_seconds: 5
 
 logging:
   level: "INFO"

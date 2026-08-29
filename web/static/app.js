@@ -1,10 +1,31 @@
 (() => {
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+  const PROFILE_HEADER = "X-Estratto-Profile";
+  const PROFILE_STORAGE_KEY = "estrattoProfileName";
+  const PROFILE_HASH_KEY = "estrattoProfileHash";
+  const PROFILE_LIST_KEY = "estrattoProfiles";
+  const PROFILE_MIN_LENGTH = 17;
+  let currentProfileName = localStorage.getItem(PROFILE_STORAGE_KEY) || "";
+  let currentProfileHash = localStorage.getItem(PROFILE_HASH_KEY) || "";
+  let savedProfiles = JSON.parse(localStorage.getItem(PROFILE_LIST_KEY) || "[]")
+    .filter((value) => typeof value === "string" && value.trim() !== "");
+
+  function storageKey(name) {
+    const suffix = currentProfileHash || "default";
+    return `estratto:${suffix}:${name}`;
+  }
 
   async function api(path, opts = {}) {
+    const headers = { ...(opts.headers || {}) };
+    if (!(opts.body instanceof FormData) && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    if (currentProfileName) {
+      headers[PROFILE_HEADER] = currentProfileName;
+    }
     const res = await fetch(path, {
-      headers: { "Content-Type": "application/json" },
+      headers,
       ...opts,
     });
     if (!res.ok) {
@@ -34,17 +55,13 @@
   const settingsToggle = $("#settings-toggle");
   const settingsDropdown = $("#settings-dropdown");
   const telegramAdvancedModal = $("#telegram-advanced-modal");
-  const authSignedOut = $("#auth-signed-out");
-  const authSignedIn = $("#auth-signed-in");
-  const authEmailInput = $("#auth-email-input");
-  const authCodeInput = $("#auth-code-input");
-  const authCodeStep = $("#auth-code-step");
-  const authRequestMessage = $("#auth-request-message");
-  const authVerifyMessage = $("#auth-verify-message");
-  const authEmailDisplay = $("#auth-email-display");
-
-  let authState = { authenticated: false, email: null };
-  let pendingAuthEmail = "";
+  const profileModal = $("#profile-modal");
+  const profileSelect = $("#profile-select");
+  const profileModalSelect = $("#profile-modal-select");
+  const profileInput = $("#profile-input");
+  const profileMessage = $("#profile-message");
+  const profileSaveBtn = $("#profile-save-btn");
+  const profileHashDisplay = $("#profile-hash-display");
   let workspaceSyncTimer = null;
   let hydratingWorkspace = false;
 
@@ -130,6 +147,7 @@
 
     const res = await fetch("/api/upload/local", {
       method: "POST",
+      headers: currentProfileName ? { [PROFILE_HEADER]: currentProfileName } : {},
       body: formData,
     });
     if (!res.ok) {
@@ -324,7 +342,7 @@
         $("#arxiv-page-info").textContent = "";
       }
 
-      if (btn.dataset.tab === "account") loadAuthStatus();
+      if (btn.dataset.tab === "account") loadProfileStatus();
       if (btn.dataset.tab === "status") refreshStatus();
       if (btn.dataset.tab === "config") loadConfig();
     });
@@ -357,7 +375,7 @@
     localStorage.removeItem("activeDocumentId");
     localStorage.setItem("readerStateVersion", READER_STATE_VERSION);
   }
-  let openDocuments = JSON.parse(localStorage.getItem("openDocuments") || "[]")
+  let openDocuments = JSON.parse(localStorage.getItem(storageKey("openDocuments")) || "[]")
     .filter((doc) => doc && doc.messageId && doc.filename)
     .map((doc) => ({
       messageId: String(doc.messageId),
@@ -367,11 +385,11 @@
       src: doc.kind === "website" && typeof doc.src === "string" ? doc.src : null,
     }))
     .filter((doc) => doc.kind !== "website" || doc.src);
-  let activeDocumentId = localStorage.getItem("activeDocumentId");
+  let activeDocumentId = localStorage.getItem(storageKey("activeDocumentId"));
   let activeAppTab = "catalog";
-  let channelHistory = JSON.parse(localStorage.getItem("channelHistory") || "[]")
+  let channelHistory = JSON.parse(localStorage.getItem(storageKey("channelHistory")) || "[]")
     .filter((value) => typeof value === "string" && value.trim() !== "");
-  let websiteLibrary = JSON.parse(localStorage.getItem("websiteLibrary") || "[]")
+  let websiteLibrary = JSON.parse(localStorage.getItem(storageKey("websiteLibrary")) || "[]")
     .filter((item) => item && typeof item.src === "string" && typeof item.filename === "string")
     .map((item) => ({
       messageId: String(item.messageId || buildWebsiteDocumentId(item.src)),
@@ -394,20 +412,8 @@
       .filter((doc) => doc.kind !== "website" || doc.src);
   }
 
-  async function loadAuthStatus() {
-    authState = await api("/api/auth/status");
-    updateAuthUi();
-    return authState;
-  }
-
-  function updateAuthUi() {
-    if (authSignedOut) authSignedOut.style.display = authState.authenticated ? "none" : "block";
-    if (authSignedIn) authSignedIn.style.display = authState.authenticated ? "block" : "none";
-    if (authEmailDisplay) authEmailDisplay.textContent = authState.email || "";
-  }
-
   function scheduleWorkspaceSync() {
-    if (!authState.authenticated || hydratingWorkspace) return;
+    if (!currentProfileName || hydratingWorkspace) return;
     clearTimeout(workspaceSyncTimer);
     workspaceSyncTimer = setTimeout(async () => {
       try {
@@ -425,7 +431,7 @@
   }
 
   async function loadWorkspaceState() {
-    if (!authState.authenticated) return;
+    if (!currentProfileName) return;
     const remote = await api("/api/workspace-state");
     const remoteDocuments = normalizeOpenDocumentsList(remote.open_documents || []);
     const hasRemoteState = remoteDocuments.length > 0 || remote.active_document_id;
@@ -438,25 +444,25 @@
     hydratingWorkspace = true;
     openDocuments = remoteDocuments;
     activeDocumentId = remote.active_document_id ? String(remote.active_document_id) : null;
-    localStorage.setItem("openDocuments", JSON.stringify(openDocuments));
-    if (activeDocumentId) localStorage.setItem("activeDocumentId", activeDocumentId);
-    else localStorage.removeItem("activeDocumentId");
+    localStorage.setItem(storageKey("openDocuments"), JSON.stringify(openDocuments));
+    if (activeDocumentId) localStorage.setItem(storageKey("activeDocumentId"), activeDocumentId);
+    else localStorage.removeItem(storageKey("activeDocumentId"));
     hydratingWorkspace = false;
   }
 
   function saveOpenDocuments() {
-    localStorage.setItem("openDocuments", JSON.stringify(openDocuments));
-    if (activeDocumentId) localStorage.setItem("activeDocumentId", activeDocumentId);
-    else localStorage.removeItem("activeDocumentId");
+    localStorage.setItem(storageKey("openDocuments"), JSON.stringify(openDocuments));
+    if (activeDocumentId) localStorage.setItem(storageKey("activeDocumentId"), activeDocumentId);
+    else localStorage.removeItem(storageKey("activeDocumentId"));
     scheduleWorkspaceSync();
   }
 
   function saveWebsiteLibrary() {
-    localStorage.setItem("websiteLibrary", JSON.stringify(websiteLibrary));
+    localStorage.setItem(storageKey("websiteLibrary"), JSON.stringify(websiteLibrary));
   }
 
   function saveChannelHistory() {
-    localStorage.setItem("channelHistory", JSON.stringify(channelHistory.slice(0, 12)));
+    localStorage.setItem(storageKey("channelHistory"), JSON.stringify(channelHistory.slice(0, 12)));
   }
 
   function rememberChannel(channel) {
@@ -473,6 +479,85 @@
     datalist.innerHTML = channelHistory
       .map((channel) => `<option value="${escapeHtml(channel)}"></option>`)
       .join("");
+  }
+
+  function normalizeSavedProfiles() {
+    savedProfiles = savedProfiles
+      .map((value) => value.trim())
+      .filter((value, index, values) => value && values.indexOf(value) === index);
+  }
+
+  function saveSavedProfiles() {
+    normalizeSavedProfiles();
+    localStorage.setItem(PROFILE_LIST_KEY, JSON.stringify(savedProfiles));
+  }
+
+  function renderProfileSelects() {
+    normalizeSavedProfiles();
+    const options = [
+      '<option value="">Type a new profile...</option>',
+      ...savedProfiles.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`),
+    ].join("");
+
+    if (profileSelect) {
+      profileSelect.innerHTML = options;
+      profileSelect.value = savedProfiles.includes(currentProfileName) ? currentProfileName : "";
+    }
+    if (profileModalSelect) {
+      profileModalSelect.innerHTML = options;
+      profileModalSelect.value = savedProfiles.includes(currentProfileName) ? currentProfileName : "";
+    }
+  }
+
+  function loadProfileScopedBrowserState() {
+    openDocuments = JSON.parse(localStorage.getItem(storageKey("openDocuments")) || "[]");
+    activeDocumentId = localStorage.getItem(storageKey("activeDocumentId"));
+    channelHistory = JSON.parse(localStorage.getItem(storageKey("channelHistory")) || "[]")
+      .filter((value) => typeof value === "string" && value.trim() !== "");
+    websiteLibrary = JSON.parse(localStorage.getItem(storageKey("websiteLibrary")) || "[]")
+      .filter((item) => item && typeof item.src === "string" && typeof item.filename === "string")
+      .map((item) => ({
+        messageId: String(item.messageId || buildWebsiteDocumentId(item.src)),
+        filename: String(item.filename),
+        kind: "website",
+        src: String(item.src),
+        message_date: item.message_date || "",
+      }));
+    customTabs = JSON.parse(localStorage.getItem(storageKey("customTabs")) || "[]");
+  }
+
+  async function loadProfileStatus() {
+    if (!currentProfileName) return null;
+    const profile = await api("/api/profile/status");
+    currentProfileHash = profile.profile_hash || "";
+    localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileName);
+    localStorage.setItem(PROFILE_HASH_KEY, currentProfileHash);
+    if (currentProfileName && !savedProfiles.includes(currentProfileName)) {
+      savedProfiles.unshift(currentProfileName);
+      saveSavedProfiles();
+    }
+    renderProfileSelects();
+    if (profileHashDisplay) profileHashDisplay.value = currentProfileHash || "";
+    return profile;
+  }
+
+  async function ensureProfile() {
+    if (currentProfileName) {
+      try {
+        await loadProfileStatus();
+        return true;
+      } catch (e) {
+        currentProfileHash = "";
+        localStorage.removeItem(PROFILE_HASH_KEY);
+        if (profileMessage) profileMessage.textContent = e.message;
+      }
+    }
+    setAppChromeHidden(true);
+    if (profileModal) profileModal.style.display = "flex";
+    if (profileInput) profileInput.value = currentProfileName;
+    renderProfileSelects();
+    if (profileHashDisplay) profileHashDisplay.value = currentProfileHash || "";
+    return false;
   }
 
   function fmtSize(bytes) {
@@ -1440,17 +1525,10 @@
 
   async function refreshStatus() {
     const s = await api("/api/status");
-    if (s.auth) {
-      authState = {
-        authenticated: Boolean(s.auth.authenticated),
-        email: s.auth.email || null,
-      };
-      updateAuthUi();
-    }
     $("#status-cards").innerHTML = `
       <div class="card"><div class="value">${s.telegram_authorized ? "Yes" : "No"}</div><div class="label">Telegram authorized</div></div>
       <div class="card"><div class="value">${s.listening ? "On" : "Off"}</div><div class="label">Live listener</div></div>
-      <div class="card"><div class="value">${authState.authenticated ? "On" : "Off"}</div><div class="label">Account sync</div></div>
+      <div class="card"><div class="value">${s.profile?.hash ? "On" : "Off"}</div><div class="label">Profile loaded</div></div>
       <div class="card"><div class="value">${s.catalog_count}</div><div class="label">Indexed files</div></div>
       ${Object.entries(s.status_counts || {}).map(([k, v]) =>
         `<div class="card"><div class="value">${v}</div><div class="label">${k}</div></div>`
@@ -1493,62 +1571,6 @@
   $("#listen-stop-btn").addEventListener("click", async () => {
     await api("/api/listen/stop", { method: "POST" });
     refreshStatus();
-  });
-
-  // ---- Account ------------------------------------------------------------
-
-  $("#auth-request-code-btn")?.addEventListener("click", async () => {
-    const email = authEmailInput?.value.trim() || "";
-    if (!email) return;
-    authRequestMessage.textContent = "Generating code...";
-    authVerifyMessage.textContent = "";
-    try {
-      const response = await api("/api/auth/request_code", {
-        method: "POST",
-        body: JSON.stringify({ email }),
-      });
-      pendingAuthEmail = email;
-      authCodeStep.style.display = "block";
-      if (response.delivery === "email") {
-        authRequestMessage.textContent = response.note || "Code sent. Check your inbox.";
-      } else {
-        authRequestMessage.textContent = response.preview_code
-          ? `Code: ${response.preview_code} (expires soon)`
-          : (response.note || "Code generated.");
-      }
-    } catch (e) {
-      authRequestMessage.textContent = e.message;
-    }
-  });
-
-  $("#auth-verify-code-btn")?.addEventListener("click", async () => {
-    const email = pendingAuthEmail || authEmailInput?.value.trim() || "";
-    const code = authCodeInput?.value.trim() || "";
-    if (!email || !code) return;
-    authVerifyMessage.textContent = "Signing in...";
-    try {
-      await api("/api/auth/verify_code", {
-        method: "POST",
-        body: JSON.stringify({ email, code }),
-      });
-      await loadAuthStatus();
-      await loadWorkspaceState();
-      syncReaderPane();
-      if (activeDocumentId && openDocuments.some((doc) => doc.messageId === activeDocumentId)) {
-        activateDocumentTab(activeDocumentId);
-      }
-      authRequestMessage.textContent = "";
-      authVerifyMessage.textContent = "";
-      authCodeInput.value = "";
-    } catch (e) {
-      authVerifyMessage.textContent = e.message;
-    }
-  });
-
-  $("#auth-logout-btn")?.addEventListener("click", async () => {
-    await api("/api/auth/logout", { method: "POST" });
-    authState = { authenticated: false, email: null };
-    updateAuthUi();
   });
 
   // ---- Telegram login ------------------------------------------------------
@@ -1645,7 +1667,6 @@
     const cfg = await api("/api/config");
     $("#telegram-advanced-api-id").value = getNested(cfg, "telegram.api_id") ?? "";
     $("#telegram-advanced-api-hash").value = getNested(cfg, "telegram.api_hash") ?? "";
-    $("#telegram-advanced-session-name").value = getNested(cfg, "telegram.session_name") ?? "";
     $("#telegram-advanced-message").textContent = "";
   }
 
@@ -1683,8 +1704,7 @@
     const message = $("#telegram-advanced-message");
     const apiId = $("#telegram-advanced-api-id").value.trim();
     const apiHash = $("#telegram-advanced-api-hash").value.trim();
-    const sessionName = $("#telegram-advanced-session-name").value.trim();
-    const patch = { telegram: { session_name: sessionName || "estratto" } };
+    const patch = { telegram: {} };
 
     if (apiId) patch.telegram.api_id = Number(apiId);
     if (apiHash) patch.telegram.api_hash = apiHash;
@@ -1701,10 +1721,10 @@
 
   // ---- Custom tabs --------------------------------------------------------
 
-  let customTabs = JSON.parse(localStorage.getItem("customTabs") || "[]");
+  let customTabs = JSON.parse(localStorage.getItem(storageKey("customTabs")) || "[]");
 
   function saveCustomTabs() {
-    localStorage.setItem("customTabs", JSON.stringify(customTabs));
+    localStorage.setItem(storageKey("customTabs"), JSON.stringify(customTabs));
   }
 
   function loadCustomTabs() {
@@ -1873,16 +1893,95 @@
 
   // ---- Init ------------------------------------------------------------
 
-  (async () => {
-    await loadAuthStatus().catch((e) => {
-      console.warn("Auth status unavailable:", e);
+  async function activateProfile(nextProfile) {
+    profileMessage.textContent = "Checking profile...";
+    const result = await fetch("/api/profile/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: nextProfile }),
+    }).then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `${res.status} ${res.statusText}`);
+      }
+      return res.json();
     });
-    if (authState.authenticated) {
-      await loadWorkspaceState().catch((e) => {
-        console.warn("Workspace state unavailable:", e);
-      });
+    currentProfileName = nextProfile.trim();
+    currentProfileHash = result.profile_hash || "";
+    if (!savedProfiles.includes(currentProfileName)) {
+      savedProfiles.unshift(currentProfileName);
     }
+    saveSavedProfiles();
+    localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileName);
+    localStorage.setItem(PROFILE_HASH_KEY, currentProfileHash);
+    loadProfileScopedBrowserState();
+    renderProfileSelects();
+    renderChannelHistory();
+    loadCustomTabs();
+    await loadWorkspaceState().catch((e) => console.warn("Workspace state unavailable:", e));
+    profileMessage.textContent = "";
+    if (profileHashDisplay) profileHashDisplay.value = currentProfileHash;
+    if (profileModal) profileModal.style.display = "none";
+    setAppChromeHidden(false);
+    syncReaderPane();
+    await refreshStatus();
+    await Promise.all([loadCatalog(), loadDownloadCatalog(), loadTagFilters(), loadDownloadTagFilters()]);
+    if (!pollHandle) {
+      pollHandle = setInterval(refreshStatus, 15000);
+    }
+  }
 
+  profileSaveBtn?.addEventListener("click", async () => {
+    const nextProfile = profileInput?.value || "";
+    try {
+      await activateProfile(nextProfile);
+    } catch (e) {
+      profileMessage.textContent = e.message || `Profile must be at least ${PROFILE_MIN_LENGTH} characters long.`;
+    }
+  });
+
+  profileInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      profileSaveBtn?.click();
+    }
+  });
+
+  profileModalSelect?.addEventListener("change", () => {
+    const selectedProfile = profileModalSelect.value || "";
+    if (profileInput) {
+      profileInput.value = selectedProfile;
+      if (selectedProfile) profileInput.focus();
+    }
+  });
+
+  profileSelect?.addEventListener("change", async () => {
+    const selectedProfile = profileSelect.value || "";
+    if (!selectedProfile || selectedProfile === currentProfileName) return;
+    if (profileInput) profileInput.value = selectedProfile;
+    try {
+      await activateProfile(selectedProfile);
+    } catch (e) {
+      profileMessage.textContent = e.message || "Could not switch profile.";
+    }
+  });
+
+  $("#profile-open-btn")?.addEventListener("click", () => {
+    if (profileInput) profileInput.value = currentProfileName;
+    renderProfileSelects();
+    if (profileHashDisplay) profileHashDisplay.value = currentProfileHash || "";
+    if (profileMessage) profileMessage.textContent = "";
+    if (profileModal) profileModal.style.display = "flex";
+    setAppChromeHidden(true);
+  });
+
+  (async () => {
+    renderProfileSelects();
+    const profileReady = await ensureProfile();
+    if (!profileReady) return;
+    await loadWorkspaceState().catch((e) => {
+      console.warn("Workspace state unavailable:", e);
+    });
     loadCatalog();
     loadTagFilters();
     loadDownloadTagFilters();

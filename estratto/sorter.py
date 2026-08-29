@@ -1,4 +1,4 @@
-"""Path resolution and file moves into the Kavita library layout."""
+"""Path resolution and file moves into the local library layout."""
 from __future__ import annotations
 
 import logging
@@ -11,7 +11,7 @@ from .metadata import Metadata, sanitize
 
 logger = logging.getLogger("estratto.sorter")
 
-# Classifier content types -> library config keys used in config.yaml `libraries`/`kavita.library_ids`.
+# Classifier content types -> library config keys used in config.yaml `libraries`.
 CONTENT_TYPE_TO_LIBRARY_KEY = {
     "book": "book",
     "magazine": "magazine",

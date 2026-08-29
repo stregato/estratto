@@ -5,13 +5,12 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import Optional
+from typing import Callable, Optional
 
 from telethon.tl.types import Message
 
 from . import db as db_module
 from .config import Config
-from .kavita_client import KavitaClient
 from .telegram_client import EstrattoTelegramClient
 
 logger = logging.getLogger("estratto")
@@ -36,39 +35,31 @@ def setup_logging(cfg: Config) -> None:
 class Pipeline:
     """Holds shared state for processing downloaded files into local storage."""
 
-    def __init__(self, cfg: Config, database: db_module.Database, kavita: Optional[KavitaClient]):
+    def __init__(
+        self,
+        cfg: Config,
+        database: db_module.Database,
+        finalize_download: Optional[Callable[[int, str, object], str]] = None,
+    ):
         self.cfg = cfg
         self.db = database
-        self.kavita = kavita
+        self.finalize_download = finalize_download
 
     async def process_file(self, message: Message, staging_path, caption: Optional[str]) -> None:
         message_id = message.id
-        self.db.mark_downloaded(message_id, str(message.chat_id), staging_path.name, str(staging_path))
-        logger.info("Stored %s locally at %s", staging_path.name, staging_path)
+        stored_path = staging_path
+        if self.finalize_download is not None:
+            stored_path = self.finalize_download(message_id, staging_path.name, staging_path)
+        self.db.mark_downloaded(message_id, str(message.chat_id), staging_path.name, str(stored_path))
+        logger.info("Stored %s locally at %s", staging_path.name, stored_path)
 
     def is_processed(self, message_id: int) -> bool:
         return self.db.is_processed(message_id)
 
-    async def flush_due_scans(self, debounce_seconds: int) -> None:
-        return
-
-    async def scan_debounce_loop(self, debounce_seconds: int, poll_interval: int = 10) -> None:
-        while True:
-            await asyncio.sleep(poll_interval)
-            try:
-                await self.flush_due_scans(debounce_seconds)
-            except Exception:
-                logger.exception("Error flushing debounced scans")
-
-
-def _build_kavita_client(cfg: Config) -> Optional[KavitaClient]:
-    return None
-
 
 async def _run(cfg: Config, mode: str) -> None:
     database = db_module.Database(cfg.db_path)
-    kavita = _build_kavita_client(cfg)
-    pipeline = Pipeline(cfg, database, kavita)
+    pipeline = Pipeline(cfg, database)
 
     telegram = EstrattoTelegramClient(
         api_id=int(cfg.get("telegram", "api_id")),
