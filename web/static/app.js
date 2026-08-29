@@ -1523,6 +1523,13 @@
     $("#login-step-password").style.display = telegramLoginStage === "password" ? "block" : "none";
   }
 
+  async function validateTelegramCredentials(apiId, apiHash) {
+    return api("/api/telegram/set_app_keys", {
+      method: "POST",
+      body: JSON.stringify({ api_id: apiId, api_hash: apiHash }),
+    });
+  }
+
   async function refreshStatus() {
     const s = await api("/api/status");
     $("#status-cards").innerHTML = `
@@ -1580,8 +1587,8 @@
     const api_hash = $("#keys-api-hash-input").value.trim();
     if (!api_id || !api_hash) return;
     try {
-      await api("/api/telegram/set_app_keys", { method: "POST", body: JSON.stringify({ api_id, api_hash }) });
-      $("#keys-message").textContent = "";
+      await validateTelegramCredentials(api_id, api_hash);
+      $("#keys-message").textContent = "Accepted for this server session.";
       refreshStatus();
     } catch (e) {
       $("#keys-message").textContent = e.message;
@@ -1664,10 +1671,9 @@
   }
 
   async function loadTelegramAdvancedConfig() {
-    const cfg = await api("/api/config");
-    $("#telegram-advanced-api-id").value = getNested(cfg, "telegram.api_id") ?? "";
-    $("#telegram-advanced-api-hash").value = getNested(cfg, "telegram.api_hash") ?? "";
-    $("#telegram-advanced-message").textContent = "";
+    $("#telegram-advanced-api-id").value = "";
+    $("#telegram-advanced-api-hash").value = "";
+    $("#telegram-advanced-message").textContent = "Optional session-only override. Values are kept only in server memory and are lost on restart.";
   }
 
   $("#config-form").addEventListener("submit", async (e) => {
@@ -1704,16 +1710,12 @@
     const message = $("#telegram-advanced-message");
     const apiId = $("#telegram-advanced-api-id").value.trim();
     const apiHash = $("#telegram-advanced-api-hash").value.trim();
-    const patch = { telegram: {} };
-
-    if (apiId) patch.telegram.api_id = Number(apiId);
-    if (apiHash) patch.telegram.api_hash = apiHash;
 
     try {
-      await api("/api/config", { method: "POST", body: JSON.stringify(patch) });
-      message.textContent = "Saved.";
+      if (!apiId || !apiHash) throw new Error("Provide both API ID and API Hash");
+      await validateTelegramCredentials(apiId, apiHash);
+      message.textContent = "Accepted for this server session.";
       await refreshStatus();
-      await loadConfig();
     } catch (e) {
       message.textContent = `Save failed: ${e.message}`;
     }

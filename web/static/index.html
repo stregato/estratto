@@ -103,8 +103,8 @@
           <p class="muted">This install doesn't have Telegram app credentials set. Get a free
           API ID and API Hash from
           <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a>
-          and paste them in below (normally you won't see this screen -- it ships with a
-          working shared default).</p>
+          and paste them in below. They are kept only in server memory for the current session
+          and are not saved in the database or profile settings.</p>
           <label>API ID <input id="keys-api-id-input" type="text" inputmode="numeric" placeholder="e.g. 123456"></label>
           <label>API Hash <input id="keys-api-hash-input" type="text" placeholder="e.g. a1b2c3..."></label>
           <button id="keys-continue-btn">Continue</button>
@@ -283,7 +283,7 @@
         <button id="telegram-advanced-modal-close" class="close-btn">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="muted">These are advanced Telegram app credentials. Only change them if you need your own app keys from <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a>.</p>
+        <p class="muted">These are optional Telegram app credentials for the current server session only. They are not stored in the database or profile settings. Provide your own keys from <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a> if needed.</p>
         <label>API ID
           <input id="telegram-advanced-api-id" type="number" inputmode="numeric">
         </label>

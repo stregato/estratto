@@ -193,6 +193,7 @@ class ProfileRuntime:
     settings: dict[str, Any]
     pipeline: Pipeline
     telegram_client: Optional[EstrattoTelegramClient] = None
+    telegram_client_credentials: Optional[tuple[str, str]] = None
     login_phone: Optional[str] = None
     index_progress: int = 0
     indexing: bool = False
@@ -259,19 +260,42 @@ class AppState:
     def telegram_settings(self, runtime: ProfileRuntime) -> dict:
         row = runtime.settings.get("telegram") or {}
         return {
-            "api_id": str(row.get("api_id") or self.cfg.get("telegram", "api_id", default="")).strip(),
-            "api_hash": str(row.get("api_hash") or self.cfg.get("telegram", "api_hash", default="")).strip(),
             "channel": str(row.get("channel") or self.cfg.get("telegram", "channel", default="")).strip(),
         }
 
     def telegram_app_configured(self, runtime: ProfileRuntime) -> bool:
-        settings = self.telegram_settings(runtime)
-        return bool(settings["api_id"]) and bool(settings["api_hash"]) and "YOUR_" not in settings["api_hash"]
+        if runtime.telegram_client_credentials is None:
+            return False
+        api_id, api_hash = runtime.telegram_client_credentials
+        return bool(api_id) and bool(api_hash) and "YOUR_" not in api_hash
 
-    async def get_telegram_client(self, runtime: ProfileRuntime, *, rebuild: bool = False) -> EstrattoTelegramClient:
+    async def get_telegram_client(
+        self,
+        runtime: ProfileRuntime,
+        *,
+        rebuild: bool = False,
+        credentials_override: Optional[dict[str, str]] = None,
+    ) -> EstrattoTelegramClient:
+        if credentials_override is not None:
+            credentials = {
+                "api_id": str(credentials_override.get("api_id") or "").strip(),
+                "api_hash": str(credentials_override.get("api_hash") or "").strip(),
+            }
+            runtime.telegram_client_credentials = (
+                credentials["api_id"],
+                credentials["api_hash"],
+            )
+        elif runtime.telegram_client_credentials is not None:
+            credentials = {
+                "api_id": runtime.telegram_client_credentials[0],
+                "api_hash": runtime.telegram_client_credentials[1],
+            }
+        else:
+            credentials = {"api_id": "", "api_hash": ""}
         settings = self.telegram_settings(runtime)
-        if not self.telegram_app_configured(runtime):
-            raise HTTPException(400, "Telegram app credentials are not configured for this profile")
+        if not credentials["api_id"] or not credentials["api_hash"] or "YOUR_" in credentials["api_hash"]:
+            runtime.telegram_client_credentials = None
+            raise HTTPException(400, "Telegram app credentials are not configured for this session")
 
         if rebuild:
             await self.stop_telegram_client(runtime)
@@ -279,8 +303,8 @@ class AppState:
         client = runtime.telegram_client
         if client is None:
             client = EstrattoTelegramClient(
-                api_id=int(settings["api_id"]),
-                api_hash=settings["api_hash"],
+                api_id=int(credentials["api_id"]),
+                api_hash=credentials["api_hash"],
                 session_name=runtime.store.telegram_session_name(),
                 channel=settings["channel"],
                 staging_dir=runtime.store.temp_dir,
@@ -297,6 +321,7 @@ class AppState:
             task.cancel()
         client = runtime.telegram_client
         runtime.telegram_client = None
+        runtime.telegram_client_credentials = None
         if client is not None:
             await client.stop()
 
@@ -498,19 +523,19 @@ def create_app(config_path: str = None) -> FastAPI:
     @app.post("/api/telegram/set_app_keys")
     async def set_app_keys(body: AppKeysBody, request: Request):
         runtime = _require_runtime(request)
-        profile_name = _profile_name_from_request(request)
         api_id = body.api_id.strip()
         api_hash = body.api_hash.strip()
         if not api_id.isdigit() or not api_hash:
             raise HTTPException(400, "API ID must be numeric and API Hash must not be empty")
-        telegram_settings = _settings_section(runtime, "telegram")
-        telegram_settings.update({"api_id": api_id, "api_hash": api_hash})
-        state.save_settings(runtime, profile_name)
         try:
-            await state.get_telegram_client(runtime, rebuild=True)
+            await state.get_telegram_client(
+                runtime,
+                rebuild=True,
+                credentials_override={"api_id": api_id, "api_hash": api_hash},
+            )
         except Exception as exc:
             raise HTTPException(400, f"Could not connect with these keys: {exc}") from exc
-        return {"status": "saved"}
+        return {"status": "ok", "note": "Telegram app credentials were validated and kept only in server memory for this session."}
 
     @app.post("/api/telegram/send_code")
     async def send_code(body: PhoneBody, request: Request):
@@ -595,7 +620,9 @@ def create_app(config_path: str = None) -> FastAPI:
         runtime.indexing = True
         runtime.index_progress = 0
         try:
-            telegram = await state.get_telegram_client(runtime)
+            telegram = runtime.telegram_client
+            if telegram is None:
+                raise RuntimeError("Telegram client is not available in memory")
 
             def on_message(message, filename):
                 caption = message.message or None
@@ -632,7 +659,9 @@ def create_app(config_path: str = None) -> FastAPI:
 
     async def _run_download(runtime: ProfileRuntime, profile_name: str, message_id: int):
         try:
-            telegram = await state.get_telegram_client(runtime)
+            telegram = runtime.telegram_client
+            if telegram is None:
+                raise RuntimeError("Telegram client is not available in memory")
             message, path, caption = await telegram.download_by_message_id(message_id)
             original_name = path.name
             encrypted_path = _finalize_download(runtime, profile_name, original_name, path)
@@ -975,9 +1004,11 @@ def create_app(config_path: str = None) -> FastAPI:
         telegram_patch = patch.get("telegram") if isinstance(patch.get("telegram"), dict) else None
         if telegram_patch is not None:
             _strip_masked_telegram_secrets(telegram_patch)
+            telegram_patch.pop("api_id", None)
+            telegram_patch.pop("api_hash", None)
         _merge_nested(runtime.settings, patch)
         state.save_settings(runtime, profile_name)
-        if telegram_patch is not None:
+        if telegram_patch is not None and runtime.telegram_client is not None:
             await state.get_telegram_client(runtime, rebuild=True)
         return {
             "status": "saved",
