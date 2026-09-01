@@ -27,6 +27,8 @@ from . import arxiv_client
 from . import db as db_module
 from . import tagger
 from .config import Config
+from .config import DEFAULT_TELEGRAM_API_HASH
+from .config import DEFAULT_TELEGRAM_API_ID
 from .main import Pipeline, setup_logging
 from .paths import static_dir
 from .profiles import (
@@ -43,6 +45,8 @@ from .telegram_client import EstrattoTelegramClient
 logger = logging.getLogger("estratto.web")
 
 STATIC_DIR = static_dir()
+TELEGRAM_API_ID_HEADER = "X-Estratto-Telegram-Api-Id"
+TELEGRAM_API_HASH_HEADER = "X-Estratto-Telegram-Api-Hash"
 
 
 def _resolve_config_relative_path(base_dir: Path, raw_path: Optional[str]) -> Optional[Path]:
@@ -263,35 +267,42 @@ class AppState:
             "channel": str(row.get("channel") or self.cfg.get("telegram", "channel", default="")).strip(),
         }
 
-    def telegram_app_configured(self, runtime: ProfileRuntime) -> bool:
-        if runtime.telegram_client_credentials is None:
-            return False
-        api_id, api_hash = runtime.telegram_client_credentials
+    def telegram_credentials(self, request: Optional[Request] = None, override: Optional[dict[str, str]] = None) -> dict[str, str]:
+        if override is not None:
+            return {
+                "api_id": str(override.get("api_id") or "").strip(),
+                "api_hash": str(override.get("api_hash") or "").strip(),
+            }
+        if request is not None:
+            api_id = str(request.headers.get(TELEGRAM_API_ID_HEADER) or "").strip()
+            api_hash = str(request.headers.get(TELEGRAM_API_HASH_HEADER) or "").strip()
+            if api_id and api_hash and "YOUR_" not in api_hash:
+                return {"api_id": api_id, "api_hash": api_hash}
+
+        return {
+            "api_id": str(DEFAULT_TELEGRAM_API_ID),
+            "api_hash": DEFAULT_TELEGRAM_API_HASH,
+        }
+
+    def telegram_app_configured(self, request: Optional[Request] = None) -> bool:
+        credentials = self.telegram_credentials(request)
+        api_id = credentials["api_id"]
+        api_hash = credentials["api_hash"]
         return bool(api_id) and bool(api_hash) and "YOUR_" not in api_hash
 
     async def get_telegram_client(
         self,
         runtime: ProfileRuntime,
+        request: Optional[Request] = None,
         *,
         rebuild: bool = False,
         credentials_override: Optional[dict[str, str]] = None,
     ) -> EstrattoTelegramClient:
-        if credentials_override is not None:
-            credentials = {
-                "api_id": str(credentials_override.get("api_id") or "").strip(),
-                "api_hash": str(credentials_override.get("api_hash") or "").strip(),
-            }
-            runtime.telegram_client_credentials = (
-                credentials["api_id"],
-                credentials["api_hash"],
-            )
-        elif runtime.telegram_client_credentials is not None:
-            credentials = {
-                "api_id": runtime.telegram_client_credentials[0],
-                "api_hash": runtime.telegram_client_credentials[1],
-            }
-        else:
-            credentials = {"api_id": "", "api_hash": ""}
+        credentials = self.telegram_credentials(request, credentials_override)
+        runtime.telegram_client_credentials = (
+            credentials["api_id"],
+            credentials["api_hash"],
+        )
         settings = self.telegram_settings(runtime)
         if not credentials["api_id"] or not credentials["api_hash"] or "YOUR_" in credentials["api_hash"]:
             runtime.telegram_client_credentials = None
@@ -471,12 +482,12 @@ def create_app(config_path: str = None) -> FastAPI:
     async def status(request: Request):
         runtime = _require_runtime(request)
         authorized = False
-        app_configured = state.telegram_app_configured(runtime)
+        app_configured = state.telegram_app_configured(request)
         settings = state.telegram_settings(runtime)
         listening = runtime.listen_task is not None and not runtime.listen_task.done()
         if app_configured:
             try:
-                authorized = await (await state.get_telegram_client(runtime)).is_authorized()
+                authorized = await (await state.get_telegram_client(runtime, request)).is_authorized()
             except Exception:
                 authorized = False
         return {
@@ -535,13 +546,13 @@ def create_app(config_path: str = None) -> FastAPI:
             )
         except Exception as exc:
             raise HTTPException(400, f"Could not connect with these keys: {exc}") from exc
-        return {"status": "ok", "note": "Telegram app credentials were validated and kept only in server memory for this session."}
+        return {"status": "ok", "note": "Telegram app credentials were validated for this browser profile."}
 
     @app.post("/api/telegram/send_code")
     async def send_code(body: PhoneBody, request: Request):
         runtime = _require_runtime(request)
         try:
-            await (await state.get_telegram_client(runtime)).send_code(body.phone)
+            await (await state.get_telegram_client(runtime, request)).send_code(body.phone)
         except Exception as exc:
             raise HTTPException(400, f"Failed to send code: {exc}") from exc
         runtime.login_phone = body.phone
@@ -554,7 +565,7 @@ def create_app(config_path: str = None) -> FastAPI:
         if not login_phone:
             raise HTTPException(400, "Call send_code first")
         try:
-            result = await (await state.get_telegram_client(runtime)).sign_in_code(login_phone, body.code)
+            result = await (await state.get_telegram_client(runtime, request)).sign_in_code(login_phone, body.code)
         except Exception as exc:
             raise HTTPException(400, f"Login failed: {exc}") from exc
         return {"status": result}
@@ -563,7 +574,7 @@ def create_app(config_path: str = None) -> FastAPI:
     async def verify_password(body: PasswordBody, request: Request):
         runtime = _require_runtime(request)
         try:
-            await (await state.get_telegram_client(runtime)).sign_in_password(body.password)
+            await (await state.get_telegram_client(runtime, request)).sign_in_password(body.password)
         except Exception as exc:
             raise HTTPException(400, f"2FA login failed: {exc}") from exc
         return {"status": "logged_in"}
@@ -571,7 +582,7 @@ def create_app(config_path: str = None) -> FastAPI:
     @app.post("/api/telegram/logout")
     async def logout(request: Request):
         runtime = _require_runtime(request)
-        client = await state.get_telegram_client(runtime)
+        client = await state.get_telegram_client(runtime, request)
         await client.log_out()
         runtime.login_phone = None
         await state.get_telegram_client(runtime, rebuild=True)
@@ -647,7 +658,7 @@ def create_app(config_path: str = None) -> FastAPI:
     @app.post("/api/index")
     async def start_index(request: Request):
         runtime = _require_runtime(request)
-        telegram = await state.get_telegram_client(runtime)
+        telegram = await state.get_telegram_client(runtime, request)
         if not await telegram.is_authorized():
             raise HTTPException(400, "Log in to Telegram first")
         if runtime.indexing:
@@ -676,7 +687,7 @@ def create_app(config_path: str = None) -> FastAPI:
     async def download(message_id: int, request: Request):
         runtime = _require_runtime(request)
         profile_name = _profile_name_from_request(request)
-        telegram = await state.get_telegram_client(runtime)
+        telegram = await state.get_telegram_client(runtime, request)
         downloading = runtime.telegram_downloading
         if not await telegram.is_authorized():
             raise HTTPException(400, "Log in to Telegram first")

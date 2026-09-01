@@ -15,11 +15,12 @@ _yaml = YAML()
 _yaml.preserve_quotes = True
 _yaml.indent(mapping=2, sequence=2, offset=0)
 
+DEFAULT_TELEGRAM_API_ID = 2040
+DEFAULT_TELEGRAM_API_HASH = "b18441a1ff607e10a989891a5462e627"
+
 # Secrets that can be set via env var instead of config.yaml. These are applied as a
 # read-only overlay at get()-time and are never written back by save().
 _ENV_OVERRIDES = {
-    ("telegram", "api_id"): "ESTRATTO_TELEGRAM_API_ID",
-    ("telegram", "api_hash"): "ESTRATTO_TELEGRAM_API_HASH",
     ("openai", "api_key"): "ESTRATTO_OPENAI_API_KEY",
 }
 
@@ -123,6 +124,14 @@ class Config:
     @property
     def telegram_session_name(self) -> str:
         return str(self.resolve_path(self.get("telegram", "session_name", default="estratto")))
+
+    @property
+    def telegram_api_id(self) -> int:
+        return int(self.get("telegram", "api_id", default=DEFAULT_TELEGRAM_API_ID))
+
+    @property
+    def telegram_api_hash(self) -> str:
+        return str(self.get("telegram", "api_hash", default=DEFAULT_TELEGRAM_API_HASH))
 
     @property
     def allowed_extensions(self) -> set[str]:

@@ -62,8 +62,8 @@ async def _run(cfg: Config, mode: str) -> None:
     pipeline = Pipeline(cfg, database)
 
     telegram = EstrattoTelegramClient(
-        api_id=int(cfg.get("telegram", "api_id")),
-        api_hash=str(cfg.get("telegram", "api_hash")),
+        api_id=cfg.telegram_api_id,
+        api_hash=cfg.telegram_api_hash,
         session_name=cfg.telegram_session_name,
         channel=str(cfg.get("telegram", "channel")),
         staging_dir=cfg.staging_dir,
