@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Estratto</title>
-  <link rel="stylesheet" href="/static/style.css?v=3">
+  <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
   <header>
@@ -31,7 +31,7 @@
     <div class="settings-menu">
       <button id="settings-toggle" class="settings-btn">⚙️</button>
       <div id="settings-dropdown" class="dropdown" style="display:none">
-        <button class="tab-btn" data-tab="account">Profile</button>
+        <button class="tab-btn" data-tab="account">Account</button>
         <button class="tab-btn" data-tab="status">Status</button>
         <button class="tab-btn" data-tab="config">Configuration</button>
         <button id="reset-catalog-menu-btn" class="tab-btn">Reset catalog</button>
@@ -207,16 +207,11 @@
 
       <section id="tab-account" class="tab">
         <div class="card">
-          <h3>Profile</h3>
-          <p class="muted">Profiles replace authentication. The raw profile text is used as encryption input; the SHA-256 hash is used as the storage binding.</p>
-          <label>Saved profiles
-            <select id="profile-select"></select>
-          </label>
-          <label>Current profile hash
-            <input id="profile-hash-display" type="text" readonly>
-          </label>
-          <p class="muted">Changing profile switches to a different encrypted storage area.</p>
-          <button id="profile-open-btn" type="button">Change profile</button>
+          <h3>Account</h3>
+          <p class="muted">Your session is remembered for 90 days on this browser.</p>
+          <label>Storage identifier<input id="profile-hash-display" type="text" readonly></label>
+          <p class="muted">After 30 days without activity, stored files are deleted from the server. Your account, settings, and library metadata are kept.</p>
+          <button id="profile-open-btn" type="button">Sign out</button>
         </div>
       </section>
 
@@ -322,24 +317,30 @@
   <div id="profile-modal" class="modal" style="display:none">
     <div class="modal-content">
       <div class="modal-header">
-        <h3>Choose Profile</h3>
+        <h3>Welcome to Estratto</h3>
       </div>
       <div class="modal-body">
-        <p class="muted">Enter any profile text with at least 17 characters. Spaces are allowed.</p>
-        <label>Saved profiles
-          <select id="profile-modal-select"></select>
+        <p class="muted">Sign in with your email and PIN. New here? Choose your PIN after entering your email. No verification email is sent.</p>
+        <label>Email
+          <input id="profile-input" type="email" required maxlength="254" autocomplete="username" placeholder="you@example.com">
         </label>
-        <label>Profile
-          <input id="profile-input" type="text" minlength="17" placeholder="e.g. My private reading profile">
-        </label>
+        <div id="pin-fields" hidden>
+          <label><span id="pin-label">6-digit PIN</span>
+            <input id="pin-input" type="password" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required autocomplete="current-password">
+          </label>
+          <label id="pin-confirm-label">Confirm PIN
+            <input id="pin-confirm" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="new-password">
+          </label>
+        </div>
+        <p class="muted">This browser remembers you for 90 days. After 30 days without activity, stored files are deleted from the server. Your account, settings, and library metadata are kept.</p>
         <div class="modal-actions">
-          <button id="profile-save-btn">Open profile</button>
+          <button id="profile-save-btn">Continue</button>
         </div>
         <p id="profile-message" class="muted"></p>
       </div>
     </div>
   </div>
 
-  <script src="/static/app.js?v=11"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>

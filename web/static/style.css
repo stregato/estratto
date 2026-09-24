@@ -257,7 +257,7 @@ body.app-chrome-hidden .document-stage {
   flex-wrap: wrap;
 }
 
-input[type="search"], input[type="text"], input[type="number"], input[type="tel"], input[type="password"] {
+input[type="search"], input[type="email"], input[type="text"], input[type="number"], input[type="tel"], input[type="password"] {
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);

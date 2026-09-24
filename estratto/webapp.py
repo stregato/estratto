@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
 import requests
 
+from . import auth
 from . import arxiv_client
 from . import db as db_module
 from . import tagger
@@ -32,12 +33,8 @@ from .config import DEFAULT_TELEGRAM_API_ID
 from .main import Pipeline, setup_logging
 from .paths import static_dir
 from .profiles import (
-    PROFILE_HASH_HEADER,
-    PROFILE_HEADER,
-    PROFILE_MIN_LENGTH,
     ProfileError,
     ProfileStore,
-    normalize_profile_name,
     profile_hash,
 )
 from .telegram_client import EstrattoTelegramClient
@@ -213,6 +210,8 @@ class ProfileRuntime:
 class AppState:
     def __init__(self, cfg: Config):
         self.cfg = cfg
+        self.auth_path = cfg.path.parent.resolve() / "accounts.db"
+        auth.initialize(self.auth_path)
         self.profile_runtimes: dict[str, ProfileRuntime] = {}
         self.background_tasks: set[asyncio.Task] = set()
 
@@ -395,10 +394,24 @@ async def lifespan(app: FastAPI):
     cfg = Config.load(app.state.config_path)
     setup_logging(cfg)
     state = AppState(cfg)
+
+    async def cleanup_loop():
+        while True:
+            try:
+                count = await asyncio.to_thread(auth.cleanup_inactive_files, state.auth_path, cfg.path.parent.resolve())
+                if count:
+                    logger.info("Cleaned stored files for %s inactive accounts", count)
+            except Exception:
+                logger.exception("Inactive file cleanup failed; will retry tomorrow")
+            await asyncio.sleep(24 * 60 * 60)
+
+    cleanup_task = asyncio.create_task(cleanup_loop())
     logger.info("Estratto web UI ready")
     try:
         yield
     finally:
+        cleanup_task.cancel()
+        await asyncio.gather(cleanup_task, return_exceptions=True)
         await state.stop_all_telegram_clients()
 
 
@@ -426,25 +439,43 @@ def create_app(config_path: str = None) -> FastAPI:
             else:
                 dst[key] = value
 
+    @app.middleware("http")
+    async def require_session(request: Request, call_next):
+        public = {"/api/auth/email", "/api/auth/login"}
+        if request.url.path.startswith("/api/") and request.url.path not in public:
+            from fastapi.responses import JSONResponse
+            try:
+                token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+                request.state.account = await asyncio.to_thread(auth.session, state.auth_path, token)
+            except HTTPException as exc:
+                return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post("/api/auth/email")
+    def check_email(data: dict):
+        email = auth.normalize_email(data.get("email"))
+        with auth.connect(state.auth_path) as db:
+            exists = db.execute("SELECT 1 FROM accounts WHERE email = ?", (email,)).fetchone()
+        return {"email": email, "registered": bool(exists)}
+
+    @app.post("/api/auth/login")
+    def login(data: dict, request: Request):
+        return auth.authenticate(state.auth_path, data.get("email"), data.get("pin"),
+                                 data.get("register") is True,
+                                 request.client.host if request.client else "local")
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request):
+        auth.logout(state.auth_path, request.headers.get("Authorization", "").removeprefix("Bearer "))
+        return {"status": "ok"}
+
     def _profile_name_from_request(request: Request) -> str:
-        if hasattr(request.state, "profile_name"):
-            return request.state.profile_name
-        raw_profile = request.headers.get(PROFILE_HEADER, "")
-        if not raw_profile.strip():
-            raise HTTPException(428, f"Profile required in {PROFILE_HEADER}")
-        try:
-            normalized = normalize_profile_name(raw_profile)
-        except ProfileError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        request.state.profile_name = normalized
-        return normalized
+        return request.state.account["profile_secret"]
 
     def _profile_hash_from_request(request: Request) -> str:
-        raw_hash = request.headers.get(PROFILE_HASH_HEADER, "").strip()
-        if raw_hash:
-            if len(raw_hash) != 64 or any(ch not in "0123456789abcdef" for ch in raw_hash.lower()):
-                raise HTTPException(400, f"Invalid {PROFILE_HASH_HEADER} value")
-            return raw_hash
         return profile_hash(_profile_name_from_request(request))
 
     def _require_runtime(request: Request) -> ProfileRuntime:
@@ -502,7 +533,6 @@ def create_app(config_path: str = None) -> FastAPI:
             "channel": settings["channel"],
             "profile": {
                 "hash": runtime.profile_hash,
-                "min_length": PROFILE_MIN_LENGTH,
             },
         }
 
@@ -511,17 +541,7 @@ def create_app(config_path: str = None) -> FastAPI:
         runtime = _require_runtime(request)
         return {
             "profile_hash": runtime.profile_hash,
-            "min_length": PROFILE_MIN_LENGTH,
-        }
-
-    @app.post("/api/profile/validate")
-    async def validate_profile(data: dict):
-        raw_profile = str(data.get("profile", ""))
-        normalized = normalize_profile_name(raw_profile)
-        return {
-            "status": "ok",
-            "profile_hash": profile_hash(normalized),
-            "min_length": PROFILE_MIN_LENGTH,
+            "email": request.state.account["email"],
         }
 
     @app.get("/api/recent")
@@ -977,7 +997,7 @@ def create_app(config_path: str = None) -> FastAPI:
     async def listen_start(request: Request):
         raise HTTPException(
             400,
-            "Live listener is disabled for profile-encrypted storage because it would require keeping the key in server memory beyond a single request",
+            "Live listener is not supported for encrypted account storage",
         )
 
     @app.post("/api/listen/stop")
@@ -1003,7 +1023,6 @@ def create_app(config_path: str = None) -> FastAPI:
         snapshot["profile"] = {
             "hash": runtime.profile_hash,
             "storage_dir": str(runtime.store.root_dir),
-            "min_length": PROFILE_MIN_LENGTH,
         }
         return snapshot
 
@@ -1200,7 +1219,7 @@ def create_app(config_path: str = None) -> FastAPI:
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = (
-            f"Range, Content-Type, {PROFILE_HEADER}, {PROFILE_HASH_HEADER}"
+            "Range, Content-Type, Authorization"
         )
         response.headers["Access-Control-Max-Age"] = "86400"
         return response
@@ -1276,7 +1295,7 @@ def create_app(config_path: str = None) -> FastAPI:
         headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-            "Access-Control-Allow-Headers": f"Range, {PROFILE_HEADER}, {PROFILE_HASH_HEADER}",
+            "Access-Control-Allow-Headers": "Range, Authorization",
             "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
             "Accept-Ranges": "bytes",
             "Cache-Control": "private, max-age=3600",

@@ -1,15 +1,14 @@
 (() => {
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-  const PROFILE_HEADER = "X-Estratto-Profile";
-  const PROFILE_STORAGE_KEY = "estrattoProfileName";
+  const PROFILE_HEADER = "Authorization";
+  const PROFILE_STORAGE_KEY = "estrattoEmail";
   const PROFILE_HASH_KEY = "estrattoProfileHash";
-  const PROFILE_LIST_KEY = "estrattoProfiles";
-  const PROFILE_MIN_LENGTH = 17;
+  let sessionToken = localStorage.getItem("estrattoSession") || "";
   let currentProfileName = localStorage.getItem(PROFILE_STORAGE_KEY) || "";
   let currentProfileHash = localStorage.getItem(PROFILE_HASH_KEY) || "";
-  let savedProfiles = JSON.parse(localStorage.getItem(PROFILE_LIST_KEY) || "[]")
-    .filter((value) => typeof value === "string" && value.trim() !== "");
+  let registering = false;
+  let emailChecked = false;
 
   function storageKey(name) {
     const suffix = currentProfileHash || "default";
@@ -22,12 +21,16 @@
       headers["Content-Type"] = "application/json";
     }
     if (currentProfileName) {
-      headers[PROFILE_HEADER] = currentProfileName;
+      headers[PROFILE_HEADER] = `Bearer ${sessionToken}`;
     }
     const res = await fetch(path, {
-      headers,
       ...opts,
+      headers,
     });
+    if (res.status === 401 && sessionToken) {
+      localStorage.removeItem("estrattoSession");
+      location.reload();
+    }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       let detail = body.detail;
@@ -56,8 +59,6 @@
   const settingsDropdown = $("#settings-dropdown");
   const telegramAdvancedModal = $("#telegram-advanced-modal");
   const profileModal = $("#profile-modal");
-  const profileSelect = $("#profile-select");
-  const profileModalSelect = $("#profile-modal-select");
   const profileInput = $("#profile-input");
   const profileMessage = $("#profile-message");
   const profileSaveBtn = $("#profile-save-btn");
@@ -147,7 +148,7 @@
 
     const res = await fetch("/api/upload/local", {
       method: "POST",
-      headers: currentProfileName ? { [PROFILE_HEADER]: currentProfileName } : {},
+      headers: currentProfileName ? { [PROFILE_HEADER]: `Bearer ${sessionToken}` } : {},
       body: formData,
     });
     if (!res.ok) {
@@ -481,34 +482,6 @@
       .join("");
   }
 
-  function normalizeSavedProfiles() {
-    savedProfiles = savedProfiles
-      .map((value) => value.trim())
-      .filter((value, index, values) => value && values.indexOf(value) === index);
-  }
-
-  function saveSavedProfiles() {
-    normalizeSavedProfiles();
-    localStorage.setItem(PROFILE_LIST_KEY, JSON.stringify(savedProfiles));
-  }
-
-  function renderProfileSelects() {
-    normalizeSavedProfiles();
-    const options = [
-      '<option value="">Type a new profile...</option>',
-      ...savedProfiles.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`),
-    ].join("");
-
-    if (profileSelect) {
-      profileSelect.innerHTML = options;
-      profileSelect.value = savedProfiles.includes(currentProfileName) ? currentProfileName : "";
-    }
-    if (profileModalSelect) {
-      profileModalSelect.innerHTML = options;
-      profileModalSelect.value = savedProfiles.includes(currentProfileName) ? currentProfileName : "";
-    }
-  }
-
   function loadProfileScopedBrowserState() {
     openDocuments = JSON.parse(localStorage.getItem(storageKey("openDocuments")) || "[]");
     activeDocumentId = localStorage.getItem(storageKey("activeDocumentId"));
@@ -527,22 +500,18 @@
   }
 
   async function loadProfileStatus() {
-    if (!currentProfileName) return null;
+    if (!sessionToken) return null;
     const profile = await api("/api/profile/status");
+    currentProfileName = profile.email;
     currentProfileHash = profile.profile_hash || "";
     localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileName);
     localStorage.setItem(PROFILE_HASH_KEY, currentProfileHash);
-    if (currentProfileName && !savedProfiles.includes(currentProfileName)) {
-      savedProfiles.unshift(currentProfileName);
-      saveSavedProfiles();
-    }
-    renderProfileSelects();
     if (profileHashDisplay) profileHashDisplay.value = currentProfileHash || "";
     return profile;
   }
 
   async function ensureProfile() {
-    if (currentProfileName) {
+    if (sessionToken) {
       try {
         await loadProfileStatus();
         return true;
@@ -555,7 +524,6 @@
     setAppChromeHidden(true);
     if (profileModal) profileModal.style.display = "flex";
     if (profileInput) profileInput.value = currentProfileName;
-    renderProfileSelects();
     if (profileHashDisplay) profileHashDisplay.value = currentProfileHash || "";
     return false;
   }
@@ -725,7 +693,7 @@
     );
     if (shouldRemove) {
       try {
-        const res = await fetch(`/api/delete/${messageId}`, { method: "POST" });
+        const res = await fetch(`/api/delete/${messageId}`, { method: "POST", headers: { Authorization: `Bearer ${sessionToken}` } });
         if (!res.ok && res.status !== 404) {
           const body = await res.json().catch(() => ({}));
           let detail = body.detail;
@@ -1535,7 +1503,7 @@
     $("#status-cards").innerHTML = `
       <div class="card"><div class="value">${s.telegram_authorized ? "Yes" : "No"}</div><div class="label">Telegram authorized</div></div>
       <div class="card"><div class="value">${s.listening ? "On" : "Off"}</div><div class="label">Live listener</div></div>
-      <div class="card"><div class="value">${s.profile?.hash ? "On" : "Off"}</div><div class="label">Profile loaded</div></div>
+      <div class="card"><div class="value">${s.profile?.hash ? "On" : "Off"}</div><div class="label">Signed in</div></div>
       <div class="card"><div class="value">${s.catalog_count}</div><div class="label">Indexed files</div></div>
       ${Object.entries(s.status_counts || {}).map(([k, v]) =>
         `<div class="card"><div class="value">${v}</div><div class="label">${k}</div></div>`
@@ -1895,29 +1863,41 @@
 
   // ---- Init ------------------------------------------------------------
 
-  async function activateProfile(nextProfile) {
-    profileMessage.textContent = "Checking profile...";
-    const result = await fetch("/api/profile/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: nextProfile }),
-    }).then(async (res) => {
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || `${res.status} ${res.statusText}`);
-      }
-      return res.json();
-    });
-    currentProfileName = nextProfile.trim();
-    currentProfileHash = result.profile_hash || "";
-    if (!savedProfiles.includes(currentProfileName)) {
-      savedProfiles.unshift(currentProfileName);
+  async function activateProfile() {
+    if (!profileInput.reportValidity()) return;
+    if (!emailChecked) {
+      const result = await api("/api/auth/email", {
+        method: "POST", body: JSON.stringify({ email: profileInput.value }),
+      });
+      profileInput.value = result.email;
+      registering = !result.registered;
+      emailChecked = true;
+      $("#pin-input").autocomplete = registering ? "new-password" : "current-password";
+      $("#pin-fields").hidden = false;
+      $("#pin-confirm-label").hidden = !registering;
+      $("#pin-label").textContent = registering ? "Choose a 6-digit PIN" : "Enter your 6-digit PIN";
+      profileSaveBtn.textContent = registering ? "Create account" : "Sign in";
+      profileMessage.textContent = registering ? "Remember this PIN. There is no email verification or PIN recovery." : "";
+      $("#pin-input").focus();
+      return;
     }
-    saveSavedProfiles();
+    const pin = $("#pin-input");
+    if (!pin.reportValidity()) return;
+    if (registering && pin.value !== $("#pin-confirm").value) {
+      throw new Error("PINs do not match");
+    }
+    const result = await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: profileInput.value, pin: pin.value, register: registering }),
+    });
+    sessionToken = result.token;
+    currentProfileName = result.email;
+    localStorage.setItem("estrattoSession", sessionToken);
     localStorage.setItem(PROFILE_STORAGE_KEY, currentProfileName);
-    localStorage.setItem(PROFILE_HASH_KEY, currentProfileHash);
+    pin.value = "";
+    $("#pin-confirm").value = "";
+    await loadProfileStatus();
     loadProfileScopedBrowserState();
-    renderProfileSelects();
     renderChannelHistory();
     loadCustomTabs();
     await loadWorkspaceState().catch((e) => console.warn("Workspace state unavailable:", e));
@@ -1934,51 +1914,40 @@
   }
 
   profileSaveBtn?.addEventListener("click", async () => {
-    const nextProfile = profileInput?.value || "";
+    profileSaveBtn.disabled = true;
     try {
-      await activateProfile(nextProfile);
+      await activateProfile();
     } catch (e) {
-      profileMessage.textContent = e.message || `Profile must be at least ${PROFILE_MIN_LENGTH} characters long.`;
+      profileMessage.textContent = e.message || "Could not sign in.";
+    } finally {
+      profileSaveBtn.disabled = false;
     }
   });
 
-  profileInput?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      profileSaveBtn?.click();
-    }
+  profileInput.addEventListener("input", () => {
+    emailChecked = false;
+    $("#pin-fields").hidden = true;
+    $("#pin-input").value = "";
+    $("#pin-confirm").value = "";
+    profileSaveBtn.textContent = "Continue";
+    profileMessage.textContent = "";
   });
-
-  profileModalSelect?.addEventListener("change", () => {
-    const selectedProfile = profileModalSelect.value || "";
-    if (profileInput) {
-      profileInput.value = selectedProfile;
-      if (selectedProfile) profileInput.focus();
-    }
+  [profileInput, $("#pin-input"), $("#pin-confirm")].forEach((input) => {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); profileSaveBtn.click(); }
+    });
   });
-
-  profileSelect?.addEventListener("change", async () => {
-    const selectedProfile = profileSelect.value || "";
-    if (!selectedProfile || selectedProfile === currentProfileName) return;
-    if (profileInput) profileInput.value = selectedProfile;
+  $("#profile-open-btn")?.addEventListener("click", async () => {
     try {
-      await activateProfile(selectedProfile);
-    } catch (e) {
-      profileMessage.textContent = e.message || "Could not switch profile.";
-    }
-  });
-
-  $("#profile-open-btn")?.addEventListener("click", () => {
-    if (profileInput) profileInput.value = currentProfileName;
-    renderProfileSelects();
-    if (profileHashDisplay) profileHashDisplay.value = currentProfileHash || "";
-    if (profileMessage) profileMessage.textContent = "";
-    if (profileModal) profileModal.style.display = "flex";
-    setAppChromeHidden(true);
+      await api("/api/auth/logout", { method: "POST" });
+      localStorage.removeItem("estrattoSession");
+      localStorage.removeItem(PROFILE_STORAGE_KEY);
+      localStorage.removeItem(PROFILE_HASH_KEY);
+      location.reload();
+    } catch (e) { alert(e.message); }
   });
 
   (async () => {
-    renderProfileSelects();
     const profileReady = await ensureProfile();
     if (!profileReady) return;
     await loadWorkspaceState().catch((e) => {

@@ -115,10 +115,30 @@ Keep real credentials in the untracked project `.env` file loaded by Compose. Th
 docker compose restart
 ```
 
-Open `http://<pi-ip>:8001`, then choose a profile name of at least 17 characters. Estratto
-uses the raw profile text as key material for encrypted-at-rest profile data, while the
-SHA-256 hash of that profile becomes the storage binding under `/data/profiles/<hash>/`.
-After that, use the Telegram source screen to log in and index files.
+Open `http://<pi-ip>:8001`, enter an email address, and choose a **six-digit PIN**
+on first use. Returning users enter the same PIN. Email format is validated but
+ownership is not verified, and no SMTP configuration or email delivery is required.
+There is currently no PIN recovery; an address can be claimed by whoever registers it first.
+
+The browser stores a random session token in local storage for **90 days**; the
+server enforces expiration and sign-out revokes that session. PINs are salted and
+hashed with scrypt, never stored in the browser. Attempts are limited per email and
+client address for 15 minutes. Use HTTPS when serving beyond localhost, and preserve
+the direct client address when deploying behind a proxy for useful IP limits.
+
+Accounts live in `accounts.db` beside the config. Each account has a random server-held
+encryption key for its storage under `profiles/<hash>/`. Protect and back up the
+account database along with the profile directories: that database contains the keys
+needed to decrypt files. Browser-side decryption is replaced by authenticated server
+streaming. Old phrase-based profile directories remain untouched and are not
+automatically linked to new accounts.
+
+A cleanup runs at server startup and daily. After **30 days without authenticated
+activity**, it deletes that account's stored document files and temporary files,
+including local uploads. It preserves the account, PIN, settings, Telegram session,
+catalog, tags, and reading metadata. A remembered session counts as activity.
+Telegram/arXiv documents can be downloaded again; local files must be uploaded again.
+After sign-in, use the Telegram source screen to log in and index files.
 
 ### What persists
 

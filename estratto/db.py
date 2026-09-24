@@ -236,6 +236,12 @@ class Database:
                 (STATUS_FAILED, error, message_id),
             )
 
+    def clear_file_storage_records(self) -> None:
+        """Forget deleted file paths, preserving catalog, tags, and reading state."""
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM files")
+            cur.execute("DELETE FROM pending_scans")
+
     def delete_file_record(self, message_id: int) -> None:
         """Delete a file record completely to reset its status."""
         with self._cursor() as cur:
