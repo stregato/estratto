@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Estratto</title>
-  <link rel="stylesheet" href="/static/style.css?v=4">
+  <link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
   <header>
@@ -58,6 +58,7 @@
           </div>
         </div>
 
+        <p id="share-status" class="muted" role="status" aria-live="polite"></p>
         <table id="catalog-table">
           <thead>
             <tr>
@@ -341,6 +342,22 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=12"></script>
+  <div id="share-menu" class="share-menu" aria-label="Share with" hidden></div>
+  <dialog id="share-modal" aria-labelledby="share-title">
+    <form id="share-form">
+      <h3 id="share-title">Share file</h3>
+      <p id="share-filename"></p>
+      <label for="share-email">Recipient email</label>
+      <input id="share-email" type="email" required maxlength="254" autocomplete="email" placeholder="reader@example.com">
+      <p class="muted">The recipient must have an Estratto account. A copy will appear in their All view. No email is sent.</p>
+      <p id="share-error" class="muted" role="alert"></p>
+      <div class="modal-actions">
+        <button id="share-cancel" type="button" class="secondary">Cancel</button>
+        <button id="share-submit" type="submit">Share</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js?v=13"></script>
 </body>
 </html>

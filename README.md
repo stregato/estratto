@@ -140,6 +140,20 @@ catalog, tags, and reading metadata. A remembered session counts as activity.
 Telegram/arXiv documents can be downloaded again; local files must be uploaded again.
 After sign-in, use the Telegram source screen to log in and index files.
 
+### Sharing files
+
+In the **All** view, click **Share** beside a stored file. Pick a previous recipient
+to share immediately, or choose **New share…** and enter a registered user's email.
+Successful recipients are remembered for your account across browsers. The recipient
+can refresh their All view to see the file, labeled with the sender's email.
+
+Sharing creates an independent encrypted copy in the recipient's storage. It does not
+send an email or expose either user's other documents, settings, or reading progress.
+Repeated sharing of the same file to the same user does not create duplicates; a file
+removed by the recipient or inactivity cleanup can be shared again. Each copy follows
+its owner's 30-day inactivity rule. Deleting the original does not revoke a delivered
+copy. Website bookmarks and files that have not been downloaded cannot be shared.
+
 ### What persists
 
 Everything important lives under `/data` inside the container, which is mapped to

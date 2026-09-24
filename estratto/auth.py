@@ -52,6 +52,11 @@ def initialize(path: Path):
             CREATE TABLE IF NOT EXISTS sessions (
                 token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS file_shares (
+                sender TEXT NOT NULL, recipient TEXT NOT NULL, message_id INTEGER NOT NULL,
+                recipient_message_id INTEGER NOT NULL, shared_at REAL NOT NULL,
+                PRIMARY KEY (sender, recipient, message_id)
+            );
             CREATE TABLE IF NOT EXISTS attempts (
                 key TEXT PRIMARY KEY, count INTEGER NOT NULL, reset_at REAL NOT NULL
             );

@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
 import requests
 
-from . import auth
+from . import auth, sharing
 from . import arxiv_client
 from . import db as db_module
 from . import tagger
@@ -879,6 +879,15 @@ def create_app(config_path: str = None) -> FastAPI:
         runtime.db.mark_downloaded(message_id, "local", filename, encrypted_path)
         return {"status": "uploaded", "message_id": _public_message_id(message_id), "filename": filename}
 
+    @app.get("/api/shares/recipients")
+    def share_recipients(request: Request):
+        return {"recipients": sharing.recipients(state.auth_path, request.state.account["email"])}
+
+    @app.post("/api/share/{message_id}")
+    def share_file(message_id: int, data: dict, request: Request):
+        return sharing.share_file(state.auth_path, state.cfg.path.parent.resolve(),
+                                  request.state.account, message_id, data.get("email"))
+
     @app.post("/api/delete/{message_id}")
     async def delete_file(message_id: int, request: Request):
         runtime = _require_runtime(request)
@@ -891,7 +900,10 @@ def create_app(config_path: str = None) -> FastAPI:
             if not path.exists():
                 continue
             try:
-                path.unlink()
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
                 deleted_paths.append(str(path))
             except Exception as exc:
                 logger.warning("Failed to delete file %s: %s", path, exc)

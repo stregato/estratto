@@ -828,7 +828,113 @@
     }
   });
 
+  // ---- File sharing -------------------------------------------------------
+  const shareMenu = $("#share-menu");
+  const shareModal = $("#share-modal");
+  const shareEmail = $("#share-email");
+  let shareTarget = null;
+  let sharing = false;
+
+  function closeShareMenu() {
+    shareMenu.hidden = true;
+    shareTarget?.button.setAttribute("aria-expanded", "false");
+  }
+
+  function closeShareModal() {
+    if (sharing) return;
+    shareModal.close();
+    shareTarget?.button.focus();
+  }
+
+  async function sendShare(email) {
+    if (sharing || !shareTarget) return;
+    sharing = true;
+    closeShareMenu();
+    const target = shareTarget;
+    target.button.disabled = true;
+    $("#share-submit").disabled = true;
+    $("#share-error").textContent = "";
+    $("#share-status").textContent = "Sharing…";
+    try {
+      const result = await api(`/api/share/${target.id}`, {
+        method: "POST", body: JSON.stringify({ email }),
+      });
+      $("#share-status").textContent = result.status === "already_shared"
+        ? `Already shared with ${result.email}.` : `Shared with ${result.email}.`;
+      shareModal.close();
+      target.button.focus();
+    } catch (error) {
+      $("#share-status").textContent = `Could not share: ${error.message}`;
+      $("#share-error").textContent = error.message;
+    } finally {
+      sharing = false;
+      target.button.disabled = false;
+      $("#share-submit").disabled = false;
+    }
+  }
+
+  $("#catalog-body").addEventListener("click", async (event) => {
+    const button = event.target.closest(".share-btn");
+    if (!button || sharing) return;
+    if (shareTarget?.button === button && !shareMenu.hidden) { closeShareMenu(); return; }
+    closeShareMenu();
+    shareTarget = { id: button.dataset.id, filename: button.dataset.filename, button };
+    button.disabled = true;
+    try {
+      const { recipients } = await api("/api/shares/recipients");
+      if (shareTarget.button !== button || !button.isConnected) return;
+      shareMenu.replaceChildren();
+      for (const email of recipients) {
+        const choice = document.createElement("button");
+        choice.type = "button";
+        choice.textContent = email;
+        choice.addEventListener("click", () => sendShare(email));
+        shareMenu.appendChild(choice);
+      }
+      const newShare = document.createElement("button");
+      newShare.type = "button";
+      newShare.textContent = "New share…";
+      newShare.addEventListener("click", () => {
+        closeShareMenu();
+        $("#share-filename").textContent = shareTarget.filename;
+        $("#share-error").textContent = "";
+        shareEmail.value = "";
+        shareModal.showModal();
+        shareEmail.focus();
+      });
+      shareMenu.appendChild(newShare);
+      shareMenu.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      const rect = button.getBoundingClientRect();
+      shareMenu.style.left = `${Math.max(8, Math.min(rect.right - shareMenu.offsetWidth, innerWidth - shareMenu.offsetWidth - 8))}px`;
+      shareMenu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - shareMenu.offsetHeight - 8))}px`;
+      shareMenu.querySelector("button").focus();
+    } catch (error) {
+      $("#share-status").textContent = `Could not load recipients: ${error.message}`;
+    } finally { button.disabled = false; }
+  });
+  document.addEventListener("click", (event) => {
+    if (!shareMenu.contains(event.target) && !event.target.closest(".share-btn")) closeShareMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !shareMenu.hidden) {
+      closeShareMenu();
+      shareTarget?.button.focus();
+    }
+  });
+  window.addEventListener("resize", closeShareMenu);
+  window.addEventListener("scroll", (event) => {
+    if (!shareMenu.contains(event.target)) closeShareMenu();
+  }, true);
+  shareModal.addEventListener("cancel", (event) => { if (sharing) event.preventDefault(); });
+  $("#share-cancel").addEventListener("click", closeShareModal);
+  $("#share-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    sendShare(shareEmail.value);
+  });
+
   function renderCatalogTable(items, total) {
+    closeShareMenu();
     const body = $("#catalog-body");
     body.innerHTML = "";
     const websiteItems = page === 0 ? filterWebsiteLibraryItems() : [];
@@ -848,21 +954,22 @@
            </span>`
         : fileExists
         ? `<span class="filename-container">
-             <a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${filename}</a>
-             <button class="rename-btn" data-id="${item.message_id}" data-filename="${filename}" title="Rename">✏️</button>
+             <a href="/viewer?id=${item.message_id}&filename=${encodeURIComponent(filename)}&embedded=1&viewer_v=${VIEWER_EMBED_VERSION}" class="filename-link" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">${escapeHtml(filename)}</a>
+             <button class="rename-btn" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}" title="Rename">✏️</button>
            </span>`
-        : filename;
+        : escapeHtml(filename);
 
       const isDownloaded = item.status && item.status !== "available";
       tr.innerHTML = `
-        <td>${filenameDisplay}</td>
+        <td>${filenameDisplay}${item.source === "shared" ? `<div class="muted">${escapeHtml(item.caption || "Shared with you")}</div>` : ""}</td>
         <td>${isWebsite ? "" : fmtSize(item.size)}</td>
         <td>${(item.message_date ?? "").slice(0, 10)}</td>
-        <td>${isWebsite ? "" : `<button class="tag-btn" data-id="${item.message_id}" data-filename="${filename}">🏷️</button>`}</td>
-        <td>
+        <td>${isWebsite ? "" : `<button class="tag-btn" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}">🏷️</button>`}</td>
+        <td class="file-actions">
+          ${!isWebsite && fileExists ? `<button type="button" class="share-btn secondary" data-id="${item.message_id}" data-filename="${escapeHtml(filename)}" aria-expanded="false" aria-controls="share-menu" aria-label="Share ${escapeHtml(filename)}">Share</button>` : ""}
           ${isWebsite
             ? `<button data-id="${escapeHtml(item.messageId)}" class="trash-website-btn" title="Delete">🗑️</button>`
-            : isDownloaded ? `<button data-id="${item.message_id}" data-path="${item.final_path || item.staging_path || ""}" class="trash-btn" title="Delete">🗑️</button>` : ""}
+            : isDownloaded ? `<button data-id="${item.message_id}" data-path="${escapeHtml(item.final_path || item.staging_path || "")}" class="trash-btn" title="Delete">🗑️</button>` : ""}
         </td>
       `;
       body.appendChild(tr);
